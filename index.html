@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Kastwijzer</title>
+  <meta name="description" content="Je kleerkast in je zak: wat past bij wat?">
+  <meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1a1917" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="28" height="28"> Kastwijzer</div>
+    <nav class="tabs" aria-label="Hoofdmenu">
+      <button data-view="kast" class="active">Kleerkast</button>
+      <button data-view="outfit">Outfit</button>
+      <button data-view="bewaard">Bewaard</button>
+    </nav>
+    <button class="icon-btn sync-btn" id="syncBtn" hidden aria-label="Synchronisatie"></button>
+    <button class="icon-btn" id="menuBtn" aria-label="Instellingen">⚙︎</button>
+  </header>
+
+  <main id="view" class="container"></main>
+
+  <button class="fab" id="fab" data-action="add" aria-label="Artikel toevoegen">＋ <span>Toevoegen</span></button>
+
+  <nav class="bottomnav" aria-label="Hoofdmenu">
+    <button data-view="kast" class="active"><span>👕</span>Kleerkast</button>
+    <button data-view="outfit"><span>✨</span>Outfit</button>
+    <button data-view="bewaard"><span>♡</span>Bewaard</button>
+  </nav>
+
+  <dialog id="sheet" class="sheet"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
