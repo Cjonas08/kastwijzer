@@ -201,8 +201,8 @@ function renderOutfit() {
       <div class="preview-info">
         <h2>Zo ziet het eruit</h2>
         ${info}
-        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button>${fitBtn}</div>
-          <p class="sub fit-note">Passen op je eigen foto kost ± €0,04 per beeld (fal.ai).</p>` : ''}
+        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button>${fitBtn}<button class="btn" data-action="gemini-export">✨ Zelf passen in Gemini</button></div>
+          <p class="sub fit-note">"Pas op mijn foto" kost ± €0,04 per beeld (fal.ai). Via Gemini doe je het zelf, gratis binnen je daglimiet.</p>` : ''}
       </div>
     </section>` + body;
     if (state.showAll) body += `<button class="link" data-action="showall">Verberg wat niet past</button>`;
@@ -254,6 +254,66 @@ async function runTryOn() {
   }
   state.fitting = false; render();
 }
+// ---------- export voor Gemini (zelf passen, zonder betalende dienst) ----------
+const GARMENT_NL = { tshirt: 't-shirt', pull: 'pull', polo: 'polo', hemd: 'hemd', broek: 'broek', short: 'short' };
+let geminiPack = null; // { files: File[], prompt }
+const dataUrlToFile = async (dataUrl, name) => new File([await (await fetch(dataUrl)).blob()], name, { type: 'image/jpeg' });
+async function openGeminiExport() {
+  if (!state.person) { toast('Voeg eerst je pasfoto toe'); return openMenu(); }
+  const o = slotItems();
+  const parts = [o.onder, o.boven, o.laag].filter(Boolean);
+  const files = [await dataUrlToFile(state.person, '1-ik.jpg')];
+  const lines = [];
+  const thumbs = [state.person];
+  try {
+    for (const [i, it] of parts.entries()) {
+      const img = await toDataUrl(it.image, 1024);
+      thumbs.push(img);
+      files.push(await dataUrlToFile(img, `${i + 2}-${GARMENT_NL[it.category]}.jpg`));
+      const layered = o.laag && o.boven && it === o.laag ? ', gedragen over het bovenstuk' : '';
+      lines.push(`Foto ${i + 2}: ${GARMENT_NL[it.category]} (${it.name})${layered}.`);
+    }
+  } catch { return toast('Een kledingfoto kon niet gelezen worden'); }
+  const prompt = `Foto 1 is een foto van mij. De andere foto's zijn productfoto's van kledingstukken. ${lines.join(' ')} `
+    + 'Maak een fotorealistische foto van mij uit foto 1 waarop ik precies deze kledingstukken draag, met hun echte kleur, motief, stof en snit. '
+    + 'Vervang alleen de kleding. Behoud mijn gezicht, haar, lichaamsbouw, houding, schoenen, de achtergrond en het licht van foto 1. '
+    + 'De kleren zitten natuurlijk, met realistische plooien en schaduwen. Geef één beeld met dezelfde uitsnede als foto 1.';
+  geminiPack = { files, prompt };
+  const canShare = !!navigator.canShare?.({ files });
+  openSheet(`
+    <h2>Zelf passen in Gemini</h2>
+    <p class="sub">Gratis binnen de daglimiet van je Gemini-account. Je geeft Gemini deze foto’s en de opdracht, en zet het resultaat daarna hier terug.</p>
+    <div class="gem-thumbs">${thumbs.map((t, i) => `<figure><img src="${esc(t)}" alt=""><figcaption>Foto ${i + 1}</figcaption></figure>`).join('')}</div>
+    <label class="field"><span>Opdracht voor Gemini</span><textarea id="gemPrompt" rows="7" readonly>${esc(prompt)}</textarea></label>
+    <ol class="gem-steps">
+      <li>${canShare ? 'Tik op <strong>Delen naar Gemini</strong> en kies Gemini. Lukt dat niet, download dan de foto’s.' : 'Klik op <strong>Foto’s downloaden</strong> en sleep ze in volgorde in Gemini (gemini.google.com).'}</li>
+      <li>Plak de opdracht erbij (knop <strong>Opdracht kopiëren</strong>) en verstuur.</li>
+      <li>Bewaar het beeld van Gemini en zet het hier terug met <strong>Resultaat toevoegen</strong>.</li>
+    </ol>
+    <div class="row-actions">
+      ${canShare ? '<button class="btn primary" data-action="gemini-share">Delen naar Gemini</button>' : ''}
+      <button class="btn ${canShare ? '' : 'primary'}" data-action="gemini-download">Foto’s downloaden</button>
+      <button class="btn" data-action="gemini-copy">Opdracht kopiëren</button>
+      <label class="btn">Resultaat toevoegen<input type="file" accept="image/*" data-fitresult hidden></label>
+    </div>`);
+}
+async function copyGeminiPrompt() {
+  try { await navigator.clipboard.writeText(geminiPack.prompt); return true; }
+  catch { const ta = $('#gemPrompt'); ta?.select(); return document.execCommand?.('copy') || false; }
+}
+async function setFitResult(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const key = fitKey();
+    const image = await toDataUrl(url, 1100);
+    await db.put('meta', { key: 'tryon:' + key, image, createdAt: Date.now() });
+    state.fits.set(key, image);
+    closeSheet();
+    toast('Beeld toegevoegd aan deze outfit');
+  } catch { toast('Deze foto kon niet gelezen worden'); }
+  URL.revokeObjectURL(url);
+}
+
 async function setPerson(file) {
   const url = URL.createObjectURL(file);
   try {
@@ -640,7 +700,7 @@ function openMenu() {
     </div>
     <section class="sync-box" id="personBox">
       <h3>Mijn pasfoto</h3>
-      <p class="sub">Een foto van jezelf, rechtopstaand en volledig in beeld. Daarop past de app je outfits fotorealistisch (knop "Pas op mijn foto"). De foto blijft op dit toestel en gaat enkel bij het passen naar het AI-model van fal.ai.</p>
+      <p class="sub">Een foto van jezelf, rechtopstaand en volledig in beeld. Daarop past de app je outfits fotorealistisch (knop "Pas op mijn foto"). De foto blijft op dit toestel. Ze gaat enkel bij het passen naar het AI-model van fal.ai, of naar Gemini als je ze zelf deelt.</p>
       ${state.person ? `<img class="person-img" src="${esc(state.person)}" alt="Je pasfoto">` : ''}
       <div class="row-actions">
         <label class="btn">${state.person ? 'Andere foto kiezen' : 'Pasfoto kiezen'}<input type="file" accept="image/*" data-person hidden></label>
@@ -755,6 +815,24 @@ const actions = {
   add: openAdd,
   surprise,
   'try-on': runTryOn,
+  'gemini-export': openGeminiExport,
+  async 'gemini-share'() {
+    const copied = await copyGeminiPrompt();
+    try {
+      await navigator.share({ files: geminiPack.files, text: geminiPack.prompt });
+      if (copied) toast('Opdracht staat ook op je klembord');
+    } catch (err) { if (err.name !== 'AbortError') toast('Delen lukte niet. Download de foto’s.'); }
+  },
+  'gemini-download'() {
+    geminiPack.files.forEach((f, i) => setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(f); a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, i * 350));
+    toast(`${geminiPack.files.length} foto’s gedownload`);
+  },
+  async 'gemini-copy'() { toast((await copyGeminiPrompt()) ? 'Opdracht gekopieerd' : 'Kopiëren lukte niet: selecteer de tekst zelf'); },
   'fit-zoom'() {
     const fit = state.fits.get(fitKey());
     if (fit) openSheet(`<h2>Jij in deze outfit</h2><img class="fit-large" src="${esc(fit)}" alt="Jij in deze outfit"><p class="sub">Door AI gemaakt beeld: pasvorm en details kunnen afwijken van de echte stukken.</p>`);
@@ -891,6 +969,7 @@ document.addEventListener('click', async (e) => {
   if (c && !sheet.contains(c)) return openDetail(c.dataset.id);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.matches('[data-fitresult]')) { if (e.target.files[0]) setFitResult(e.target.files[0]); return; }
   if (e.target.matches('[data-person]')) { if (e.target.files[0]) setPerson(e.target.files[0]); return; }
   if (e.target.matches('[data-addphoto]')) { addPhotos(e.target.dataset.addphoto, e.target.files); return; }
   if (e.target.matches('[data-season]')) { state.season = e.target.value; render(); }

@@ -290,3 +290,11 @@ select, input[type=url], input[type=email], input:not([type]), input[type=text] 
 .fit-note { margin-top: 6px; font-size: .8rem; }
 .person-img { display: block; width: 120px; height: 160px; object-fit: cover; border-radius: 10px; margin: 8px 0; }
 .mini-fit { object-fit: cover; }
+
+/* Export voor Gemini */
+.gem-thumbs { display: flex; gap: 8px; overflow-x: auto; margin: 10px 0; }
+.gem-thumbs figure { margin: 0; flex: none; text-align: center; font-size: .75rem; color: var(--muted); }
+.gem-thumbs img { display: block; width: 84px; height: 112px; object-fit: cover; border-radius: 8px; margin-bottom: 2px; }
+#gemPrompt { width: 100%; font: inherit; font-size: .85rem; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: inherit; resize: vertical; }
+.gem-steps { padding-left: 20px; margin: 10px 0; font-size: .9rem; }
+.gem-steps li { margin: 4px 0; }

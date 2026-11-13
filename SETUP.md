@@ -51,6 +51,14 @@ Goed om te weten:
 - Het beeld is door AI gemaakt: pasvorm en details kunnen afwijken van het echte stuk.
 - Een ander model proberen kan met een extra secret `FAL_MODEL` (een fal-model dat `prompt` en `image_urls` aanvaardt).
 
+### 7. Gratis alternatief: zelf passen in Gemini
+Dit werkt zonder Supabase en zonder fal.ai. Je hebt enkel een Google-account met Gemini nodig; het aantal gratis beelden per dag bepaalt Google.
+1. Kies je pasfoto via **⚙︎ Instellingen → Mijn pasfoto**.
+2. Stel een outfit samen en tik op **✨ Zelf passen in Gemini**.
+3. Op je gsm: **Delen naar Gemini**. Op pc: **Foto's downloaden** en ze in volgorde in [gemini.google.com](https://gemini.google.com) slepen.
+4. Plak de opdracht erbij (**Opdracht kopiëren**) en verstuur.
+5. Bewaar het beeld van Gemini en zet het terug in de app met **Resultaat toevoegen**. Het hangt dan aan die outfit.
+
 ---
 
 ## Deel 2: Online zetten met GitHub Pages
