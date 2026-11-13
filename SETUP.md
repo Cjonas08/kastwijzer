@@ -46,7 +46,7 @@ Met de knop **📸 Pas op mijn foto** tekent een AI-model je outfit fotorealisti
 
 Goed om te weten:
 - Je moet ingelogd zijn (stap 5). Zo kan niemand anders op jouw kosten beelden maken.
-- Je pasfoto blijft op het toestel waar je ze koos. Bij het passen gaan ze samen met de kledingfoto's naar fal.ai.
+- Je pasfoto en de gepaste beelden zitten in de back-up en, als synchronisatie aan staat, in je eigen Supabase (privé-opslag). Bij het passen gaan de pasfoto en de kledingfoto's naar fal.ai.
 - Een gepast beeld wordt op je toestel bewaard, dus dezelfde outfit opnieuw bekijken kost niets. Enkel **Opnieuw passen** kost opnieuw.
 - Het beeld is door AI gemaakt: pasvorm en details kunnen afwijken van het echte stuk.
 - Een ander model proberen kan met een extra secret `FAL_MODEL` (een fal-model dat `prompt` en `image_urls` aanvaardt).
@@ -58,6 +58,17 @@ Dit werkt zonder Supabase en zonder fal.ai. Je hebt enkel een Google-account met
 3. Op je gsm: **Delen naar Gemini**. Op pc: **Foto's downloaden** en ze in volgorde in [gemini.google.com](https://gemini.google.com) slepen.
 4. Plak de opdracht erbij (**Opdracht kopiëren**) en verstuur.
 5. Bewaar het beeld van Gemini en zet het terug in de app met **Resultaat toevoegen**. Het hangt dan aan die outfit.
+
+### 8. Afschermen: alleen jij (doe dit zeker als je stap 6 gebruikt)
+Standaard kan iedereen die je publieke sleutel kent een account aanmaken in je Supabase-project. Je gegevens blijven dan wel afgeschermd, maar zo iemand zou de betalende pasbeurt op jouw kosten kunnen gebruiken. Sluit dat af:
+1. Log eerst zelf één keer in via de app (pc en gsm).
+2. In Supabase: **Authentication → Sign In / Providers** → zet **Allow new users to sign up** uit.
+3. **Edge Functions → Secrets** → voeg `ALLOWED_EMAILS` toe met je eigen e-mailadres (meerdere adressen scheid je met een komma). De functies `try-on` en `fetch-page` weigeren dan elk ander account.
+4. Optioneel: secret `DAILY_LIMIT` (standaard 20) bepaalt hoeveel beelden je per dag kan laten maken.
+5. Heb je `supabase/setup.sql` vóór deze versie uitgevoerd? Voer het dan opnieuw uit in de **SQL Editor**: het voegt de teller voor de daglimiet toe en laat de synchronisatie van je pasfoto, gepaste beelden en weekplanning toe. Opnieuw uitvoeren wist niets.
+
+### 9. Tests
+Open `tests/` achter het adres van de app (bv. `https://<jouw-naam>.github.io/kastwijzer/tests/`). De pagina controleert het rekenwerk: matching, tekstherkenning, uitknippen, paklijst en kastanalyse.
 
 ---
 

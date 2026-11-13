@@ -131,6 +131,9 @@ export async function analyzeImage(src) {
 
 // ---------- Tekst (naam van het artikel of titel van de webshop) ----------
 const RULES = [
+  [/schoen|sneaker|loafer|laars|laarzen|boots?\b|sandaal|sandalen|slipper|espadrille|mocassin|derby|brogue/i, 'schoenen'],
+  [/\bjas\b|jasje|jacket|\bjack\b|blazer|mantel|parka|bomber|trenchcoat|regenjas|bodywarmer|overshirt|colbert/i, 'jas'],
+  [/riem|sjaal|\bmuts\b|\bpet\b|\bcap\b|horloge|das\b|stropdas|zonnebril|handschoen|tas\b|rugzak/i, 'accessoire'],
   [/\bshorts?\b|bermuda|zwembroek/i, 'short'],
   [/t-?shirt|\btee\b|longsleeve/i, 'tshirt'],
   [/\bpolo/i, 'polo'],
@@ -160,6 +163,8 @@ export function guessFromText(text = '') {
   for (const [word, hex] of COLOR_WORDS) if (low.includes(word)) { out.hex = hex; out.colorWord = word; break; }
   for (const [re, cat] of RULES) if (re.test(text)) { out.category = cat; break; }
   if (/jogging|jogger|track|sport|dry-?fit|training|running/i.test(text)) out.looks = ['sportief', 'casual'];
+  else if (/blazer|colbert|loafer|derby|brogue|stropdas/i.test(text)) out.looks = ['casualchique', 'business', 'chique'];
+  else if (/sneaker|bomber|parka|pet\b|cap\b|rugzak/i.test(text)) out.looks = ['sportief', 'casual'];
   else if (/smoking|kostuum|nethemd|dress shirt|wollen pantalon/i.test(text)) out.looks = ['chique', 'gekleed'];
   else if (/pantalon|trousers/i.test(text)) out.looks = ['business', 'chique', 'gekleed'];
   else if (/hoodie|sweat|cargo|graphic|print|flanel/i.test(text)) out.looks = ['casual'];

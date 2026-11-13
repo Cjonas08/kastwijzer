@@ -82,7 +82,7 @@ function legs(item, fill) {
 }
 
 // items: { onder, boven, laag } met artikels (of null). Geeft een SVG-string terug.
-export function outfitFigure({ onder, boven, laag }, { width = 180 } = {}) {
+export function outfitFigure({ onder, boven, laag, jas, schoenen }, { width = 180 } = {}) {
   const p = `fig${++uid}-`;
   const defs = [];
   let body = '';
@@ -99,7 +99,7 @@ export function outfitFigure({ onder, boven, laag }, { width = 180 } = {}) {
   // Benen en schoenen
   if (onder) body += legs(onder, fillFor(onder, defs, p + 'onder'));
   else body += poly([[62, 206], [99, 206], [97, 398], [72, 398]], '#bdb6ab', 'opacity=".5"') + poly(mirror([[62, 206], [99, 206], [97, 398], [72, 398]]), '#bdb6ab', 'opacity=".5"');
-  body += `<ellipse cx="82" cy="404" rx="17" ry="7" fill="${SHOE}"/><ellipse cx="118" cy="404" rx="17" ry="7" fill="${SHOE}"/>`;
+  body += `<ellipse cx="82" cy="404" rx="17" ry="7" fill="${schoenen?.hex || SHOE}"/><ellipse cx="118" cy="404" rx="17" ry="7" fill="${schoenen?.hex || SHOE}"/>`;
 
   // Bovenstuk(ken)
   if (boven) {
@@ -120,6 +120,15 @@ export function outfitFigure({ onder, boven, laag }, { width = 180 } = {}) {
     if (boven?.category === 'tshirt') body += `<path d="M86 77 Q100 92 114 77" fill="none" stroke="${rib}" stroke-width="4"/>`;
   }
   if (!boven && !laag) body += poly([[64, 84], [86, 76], [114, 76], [136, 84], [140, 214], [60, 214]], '#bdb6ab', 'opacity=".5"');
+  if (jas) {
+    // Open jas: mouwen en twee voorpanden, het bovenstuk blijft in het midden zichtbaar.
+    const f = fillFor(jas, defs, p + 'jas');
+    const sleeve = [[64, 84], [44, 93], [30, 198], [51, 202], [62, 120]];
+    const panel = [[62, 84], [86, 75], [91, 82], [87, 228], [55, 228]];
+    const lapel = [[86, 75], [91, 82], [85, 116], [77, 86]];
+    body += poly(sleeve, f, OUTLINE) + poly(mirror(sleeve), f, OUTLINE) + poly(panel, f, OUTLINE) + poly(mirror(panel), f, OUTLINE)
+      + poly(lapel, shade(jas.hex, 0.14), OUTLINE) + poly(mirror(lapel), shade(jas.hex, 0.14), OUTLINE);
+  }
   body += hands;
 
   return `<svg class="figure" viewBox="20 8 160 408" width="${width}" role="img" aria-label="Paspop met deze outfit" xmlns="http://www.w3.org/2000/svg">

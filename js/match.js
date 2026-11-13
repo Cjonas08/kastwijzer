@@ -73,9 +73,29 @@ export function autoScore(a, b) {
   return { score: Math.max(0, Math.min(100, Math.round(s))), why };
 }
 
+// Leert uit jouw ✓/✗: als je dezelfde kleurcombinatie minstens twee keer goed- of afkeurt,
+// telt dat ook voor andere stukken in die kleuren.
+export const colorPair = (a, b) => [colorName(a.hex), colorName(b.hex)].sort().join('+');
+export function learnPrefs(overrides, byId) {
+  const net = new Map();
+  for (const [key, value] of overrides) {
+    const [a, b] = key.split('|').map(byId);
+    if (!a || !b) continue;
+    const k = colorPair(a, b);
+    net.set(k, (net.get(k) || 0) + (value === 'yes' ? 1 : -1));
+  }
+  return new Map([...net].filter(([, n]) => Math.abs(n) >= 2));
+}
+
 // Score met jouw aanpassingen erbij: ✓ = altijd ja, ✗ = altijd nee.
+// overrides.prefs (optioneel) bevat wat de app uit je keuzes geleerd heeft.
 export function score(a, b, overrides) {
   const auto = autoScore(a, b);
+  const learned = overrides.prefs?.get(colorPair(a, b));
+  if (learned) {
+    auto.score = Math.max(0, Math.min(100, auto.score + (learned > 0 ? 12 : -12)));
+    auto.why.unshift(learned > 0 ? 'jij vindt deze kleuren samen mooi' : 'jij keurt deze kleuren samen vaak af');
+  }
   const o = overrides.get(pairKey(a.id, b.id));
   if (o === 'yes') return { ...auto, auto: auto.score, score: 100, override: 'yes' };
   if (o === 'no') return { ...auto, auto: auto.score, score: 0, override: 'no' };

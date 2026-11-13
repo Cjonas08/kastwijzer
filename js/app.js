@@ -1,8 +1,11 @@
 import { db } from './db.js';
-import { CATS, CAT_ORDER, SLOTS, slotOf, PATTERNS, SEASONS, LOOKS, LOOK_ORDER, defaultLooks, looksFromFormality, defaultSeason, colorName, uid } from './model.js';
+import { CATS, CAT_ORDER, SLOTS, slotOf, emptyOutfit, PATTERNS, SEASONS, LOOKS, LOOK_ORDER, defaultLooks, looksFromFormality, defaultSeason, colorName, uid } from './model.js';
 import { estimate, analyzeImage, fileToDataUrl, toDataUrl, importFromLink, guessFromText } from './analyze.js';
 import { mountCropper } from './crop.js';
-import { compatible, score, verdict, outfitScore, pairKey } from './match.js';
+import { compatible, score, verdict, outfitScore, pairKey, learnPrefs } from './match.js';
+import { collage, collageKey } from './collage.js';
+import { getPlace, setPlace, forgetPlace, todayWeather } from './weather.js';
+import { dayKey, wornLabel, recentlyWorn, weatherAdvice, packList, analyse, fitsCloset } from './insights.js';
 import { SEED_ITEMS, SEED_OVERRIDES } from './seed.js';
 import { outfitFigure } from './figure.js';
 import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut, tryOn } from './sync.js';
@@ -16,7 +19,12 @@ const state = {
   overrides: new Map(),
   view: 'kast',
   filter: 'alle',
-  outfit: { onder: null, boven: null, laag: null },
+  outfit: emptyOutfit(),
+  q: '',             // zoekterm in de kast
+  weather: null,
+  seasonTouched: false,
+  plan: {},          // weekplanning: datum -> outfit-id
+  queue: [],         // foto's die nog toegevoegd moeten worden
   showAll: false,
   season: 'alle',
   look: 'alle',
@@ -39,9 +47,16 @@ async function load() {
   }
   state.outfits = (await db.all('outfits')).sort((a, b) => b.createdAt - a.createdAt);
   state.overrides = new Map((await db.all('overrides')).map((o) => [o.key, o.value]));
-  const metas = await db.all('meta');
-  state.person = metas.find((m) => m.key === 'pasfoto')?.image || null;
-  state.fits = new Map(metas.filter((m) => m.key.startsWith('tryon:')).map((m) => [m.key.slice(6), m.image]));
+  state.overrides.prefs = learnPrefs(state.overrides, byId);
+  // Oudere versies bewaarden pasfoto en gepaste beelden enkel lokaal: verhuizen naar 'extras' (back-up en sync).
+  for (const m of await db.all('meta')) {
+    if (m.key === 'pasfoto') { await db.put('extras', { id: 'pasfoto', image: m.image }); await db.del('meta', m.key); }
+    else if (m.key.startsWith('tryon:')) { await db.put('extras', { id: 'fit:' + m.key.slice(6), image: m.image, createdAt: m.createdAt }); await db.del('meta', m.key); }
+  }
+  const extras = await db.all('extras');
+  state.person = extras.find((x) => x.id === 'pasfoto')?.image || null;
+  state.fits = new Map(extras.filter((x) => x.id.startsWith('fit:')).map((x) => [x.id.slice(4), x.image]));
+  state.plan = extras.find((x) => x.id === 'plan')?.days || {};
 }
 async function seed() {
   await db.putMany('items', SEED_ITEMS);
@@ -57,6 +72,7 @@ async function setOverride(a, b, value) {
   const key = pairKey(a, b);
   if (value) { await db.put('overrides', { key, value }); state.overrides.set(key, value); }
   else { await db.del('overrides', key); state.overrides.delete(key); }
+  state.overrides.prefs = learnPrefs(state.overrides, byId);
 }
 
 // ---------- algemeen ----------
@@ -81,7 +97,12 @@ function openSheet(html, cls = '') {
   sheet.appendChild(toastEl); // de melding moet in het venster zitten om zichtbaar te blijven
 }
 sheet.addEventListener('close', () => document.body.appendChild(toastEl));
-function closeSheet() { if (sheet.open) sheet.close(); }
+function closeSheet() {
+  if (!sheet.open) return;
+  sheet.close();
+  document.body.appendChild(toastEl);
+  render(); // niet wachten op de close-gebeurtenis: die komt soms pas later
+}
 sheet.addEventListener('click', (e) => {
   if (e.target === sheet || e.target.closest('[data-close]')) closeSheet();
 });
@@ -99,7 +120,7 @@ const badge = (sc, small) => { const v = verdict(sc); return `<span class="badge
 
 function card(item, extra = '', attrs = '') {
   return `<button class="card" data-id="${item.id}" ${attrs}>
-    <div class="thumb"><img loading="lazy" src="${esc(item.image)}" alt="">${item.photos?.length ? `<span class="photo-count">${item.photos.length + 1} foto's</span>` : ''}</div>
+    <div class="thumb"><img loading="lazy" src="${esc(item.image)}" alt="">${item.photos?.length ? `<span class="photo-count">${item.photos.length + 1} foto's</span>` : ''}${item.wash ? '<span class="wash-tag">🧺 in de was</span>' : ''}</div>
     <div class="card-body">
       <div class="card-name">${esc(item.name)}</div>
       <div class="card-meta">${swatch(item.hex, item.hex2)}${colorName(item.hex)} · ${CATS[item.category].label}</div>
@@ -109,25 +130,43 @@ function card(item, extra = '', attrs = '') {
 }
 
 // ---------- weergave: kleerkast ----------
+function closetItems() {
+  const sorted = [...state.items].sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category) || b.createdAt - a.createdAt);
+  let list = state.filter === 'alle' ? sorted : state.filter === 'was' ? sorted.filter((i) => i.wash) : sorted.filter((i) => i.category === state.filter);
+  const words = state.q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length) {
+    list = list.filter((i) => {
+      const hay = [i.name, colorName(i.hex), CATS[i.category].label, PATTERNS[i.pattern], SEASONS[i.season], ...(i.looks || []).map((l) => LOOKS[l]?.label)].join(' ').toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  }
+  return list;
+}
+function closetGrid() {
+  const list = closetItems();
+  if (list.length) return `<div class="grid">${list.map((i) => card(i)).join('')}</div>`;
+  return state.q ? `<div class="empty"><p>Niets gevonden voor "${esc(state.q)}".</p></div>`
+    : `<div class="empty"><p>Nog niets in deze categorie.</p><button class="btn primary" data-action="add">Artikel toevoegen</button></div>`;
+}
 function renderCloset() {
   const counts = Object.fromEntries(CAT_ORDER.map((c) => [c, state.items.filter((i) => i.category === c).length]));
-  const sorted = [...state.items].sort((a, b) => CAT_ORDER.indexOf(a.category) - CAT_ORDER.indexOf(b.category) || b.createdAt - a.createdAt);
-  const list = state.filter === 'alle' ? sorted : sorted.filter((i) => i.category === state.filter);
-  const chips = [['alle', 'Alles', state.items.length], ...CAT_ORDER.map((c) => [c, CATS[c].plural, counts[c]])]
+  const washing = state.items.filter((i) => i.wash).length;
+  const chips = [['alle', 'Alles', state.items.length], ...CAT_ORDER.filter((c) => counts[c] || CAT_ORDER.indexOf(c) < 6).map((c) => [c, CATS[c].plural, counts[c]]), ...(washing ? [['was', '🧺 In de was', washing]] : [])]
     .map(([k, l, n]) => `<button class="chip ${state.filter === k ? 'on' : ''}" data-filter="${k}">${l} <span>${n}</span></button>`).join('');
   return `
     <div class="view-head">
       <h1>Mijn kleerkast</h1>
       <p class="sub">${state.items.length} artikels. Tik op een artikel om te zien wat erbij past.</p>
     </div>
+    <input type="search" class="search" data-search placeholder="Zoek op naam, kleur, look…" value="${esc(state.q)}" aria-label="Zoeken in je kast">
     <div class="chips">${chips}</div>
-    ${list.length ? `<div class="grid">${list.map((i) => card(i)).join('')}</div>`
-      : `<div class="empty"><p>Nog niets in deze categorie.</p><button class="btn primary" data-action="add">Artikel toevoegen</button></div>`}
+    <div id="closetGrid">${closetGrid()}</div>
   `;
 }
 
 // ---------- weergave: outfit samenstellen ----------
 function seasonOk(item) {
+  if (item.wash) return false;
   if (state.look !== 'alle' && !(item.looks || []).includes(state.look)) return false;
   if (state.season === 'alle') return true;
   return item.season === 'altijd' || item.season === state.season;
@@ -135,7 +174,7 @@ function seasonOk(item) {
 
 function renderOutfit() {
   const chosen = SLOTS.map((s) => state.outfit[s.id]).filter(Boolean).map(byId).filter(Boolean);
-  const slotCards = SLOTS.map((s) => {
+  const slotCards = SLOTS.filter((s) => !s.optional || state.outfit[s.id] || s.id === 'laag').map((s) => {
     const it = state.outfit[s.id] && byId(state.outfit[s.id]);
     return `<div class="slot ${it ? 'filled' : ''}">
       <div class="slot-label">${s.label}${s.optional ? ' <em>optioneel</em>' : ''}</div>
@@ -162,7 +201,8 @@ function renderOutfit() {
       }).join('')}
     </div>`;
   } else {
-    body = SLOTS.filter((s) => !state.outfit[s.id]).map((s) => {
+    const base = state.outfit.onder && (state.outfit.boven || state.outfit.laag);
+    body = SLOTS.filter((s) => !state.outfit[s.id] && (base || !['jas', 'schoenen', 'accessoire'].includes(s.id))).map((s) => {
       // Een pull over een t-shirt/hemd: enkel tonen als er al een bovenstuk of onderstuk is.
       let cands = state.items.filter((i) => s.cats.includes(i.category) && seasonOk(i))
         .map((i) => ({ i, r: outfitScore(i, chosen, state.overrides) }))
@@ -170,10 +210,10 @@ function renderOutfit() {
         .sort((a, b) => b.r.score - a.r.score);
       const hidden = cands.filter((x) => x.r.score < 50).length;
       if (!state.showAll) cands = cands.filter((x) => x.r.score >= 50);
-      const title = { onder: 'Kies een onderstuk', boven: 'Kies een bovenstuk', laag: 'Een pull erover?' }[s.id];
+      const title = { onder: 'Kies een onderstuk', boven: 'Kies een bovenstuk', laag: 'Een pull erover?', jas: 'Een jas erbij?', schoenen: 'Welke schoenen?', accessoire: 'Een accessoire?' }[s.id];
       return `<section class="suggest">
         <h2>${title}</h2>
-        ${cands.length ? `<div class="strip">${cands.map((x) => card(x.i, badge(x.r.score, true), `data-pick="${x.i.id}"`)).join('')}</div>`
+        ${cands.length ? `<div class="strip">${cands.map((x) => card(x.i, badge(x.r.score, true) + (recentlyWorn(x.i) ? '<span class="worn-tag">pas gedragen</span>' : ''), `data-pick="${x.i.id}"`)).join('')}</div>`
           : `<p class="sub">Niets dat goed past${hidden ? '' : ' in je kast'}.</p>`}
         ${hidden && !state.showAll ? `<button class="link" data-action="showall">Toon ook ${hidden} die minder goed passen</button>` : ''}
       </section>`;
@@ -197,11 +237,11 @@ function renderOutfit() {
     body = `<section class="preview">
       <div class="preview-fig">${fit
         ? `<button class="fit-btn" data-action="fit-zoom" aria-label="Vergroten"><img class="fit-img" src="${esc(fit)}" alt="Jij in deze outfit"></button>`
-        : outfitFigure(slotItems(), { width: 150 })}</div>
+        : `<button class="fit-btn" data-action="collage-zoom" aria-label="Vergroten"><span id="collageHost" data-key="${esc(collageKey(slotItems()))}">${outfitFigure(slotItems(), { width: 150 })}</span></button>`}</div>
       <div class="preview-info">
         <h2>Zo ziet het eruit</h2>
         ${info}
-        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button>${fitBtn}<button class="btn" data-action="gemini-export">✨ Zelf passen in Gemini</button></div>
+        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button><button class="btn" data-action="wear-today">✓ Vandaag gedragen</button>${fitBtn}<button class="btn" data-action="gemini-export">✨ Zelf passen in Gemini</button></div>
           <p class="sub fit-note">"Pas op mijn foto" kost ± €0,04 per beeld (fal.ai). Via Gemini doe je het zelf, gratis binnen je daglimiet.</p>` : ''}
       </div>
     </section>` + body;
@@ -221,21 +261,62 @@ function renderOutfit() {
         ${chosen.length ? '<button class="btn ghost" data-action="reset-outfit">Opnieuw</button>' : ''}
       </div>
     </div>
+    ${weatherBar()}
     <div class="slots">${slotCards}</div>
     ${body}`;
 }
 
-const slotItems = (ids = state.outfit) => ({ onder: ids.onder && byId(ids.onder), boven: ids.boven && byId(ids.boven), laag: ids.laag && byId(ids.laag) });
+const slotItems = (ids = state.outfit) => Object.fromEntries(SLOTS.map((s) => [s.id, (ids[s.id] && byId(ids[s.id])) || null]));
+
+// Weer van vandaag boven de outfit.
+function weatherBar() {
+  if (!getPlace()) return '<div class="weather"><button class="link" data-action="weather-set">🌤 Weer van vandaag gebruiken</button></div>';
+  const w = state.weather;
+  if (!w) return '<div class="weather"><span class="sub">Weer ophalen…</span> <button class="link" data-action="weather-set">wijzig</button></div>';
+  const a = weatherAdvice(w);
+  return `<div class="weather"><div>🌤 <strong>${esc(w.place)}</strong> ${w.tmax}° / ${w.tmin}° · ${w.rain}% kans op regen <button class="link" data-action="weather-set">wijzig</button></div>
+    <span class="sub">Advies: ${a.text}.</span></div>`;
+}
+async function refreshWeather() {
+  try {
+    state.weather = await todayWeather();
+    if (state.weather && !state.seasonTouched) state.season = weatherAdvice(state.weather).season;
+  } catch { state.weather = null; }
+  if (state.view === 'outfit') render();
+}
+
+// De neergelegde outfit (uitgeknipte foto's) vervangt de paspop zodra hij klaar is.
+function paintCollage() {
+  const host = $('#collageHost');
+  if (!host) return;
+  const key = host.dataset.key;
+  collage(slotItems()).then((url) => {
+    const h = $('#collageHost');
+    if (h && h.dataset.key === key) h.innerHTML = `<img class="fit-img" src="${url}" alt="De stukken van deze outfit naast elkaar">`;
+  }).catch(() => { /* paspop blijft staan */ });
+}
+
+// Draaglogboek
+async function wear(items) {
+  const today = dayKey();
+  let n = 0;
+  for (const it of items) {
+    if (it.worn?.[it.worn.length - 1] === today) continue;
+    await saveItem({ ...it, worn: [...(it.worn || []), today].slice(-120) });
+    n++;
+  }
+  return n;
+}
 // ---------- pasbeurt op eigen foto ----------
 const fitKeyOf = (ids) => [...ids].filter(Boolean).sort().join('+');
 const fitKey = () => fitKeyOf(SLOTS.map((s) => state.outfit[s.id]));
-const GARMENT_EN = { tshirt: 't-shirt', pull: 'sweater', polo: 'polo shirt', hemd: 'button-up shirt', broek: 'long trousers', short: 'shorts' };
+const GARMENT_EN = { tshirt: 't-shirt', pull: 'sweater', polo: 'polo shirt', hemd: 'button-up shirt', broek: 'long trousers', short: 'shorts', jas: 'jacket, worn open over the other tops', schoenen: 'shoes', accessoire: 'accessory' };
 async function runTryOn() {
   if (state.fitting) return;
   if (!state.person) { toast('Voeg eerst je pasfoto toe'); return openMenu(); }
   const o = slotItems();
   const key = fitKey();
-  const parts = [o.onder, o.boven, o.laag].filter(Boolean);
+  const parts = SLOTS.map((sl) => o[sl.id]).filter(Boolean);
   state.fitting = true; render();
   try {
     const garments = [];
@@ -246,7 +327,7 @@ async function runTryOn() {
     const blob = await tryOn(state.person, garments);
     const url = URL.createObjectURL(blob);
     const image = await toDataUrl(url, 1100).finally(() => URL.revokeObjectURL(url));
-    await db.put('meta', { key: 'tryon:' + key, image, createdAt: Date.now() });
+    await db.put('extras', { id: 'fit:' + key, image, createdAt: Date.now() });
     state.fits.set(key, image);
     toast('Klaar! Tik op de foto om te vergroten.');
   } catch (err) {
@@ -255,13 +336,13 @@ async function runTryOn() {
   state.fitting = false; render();
 }
 // ---------- export voor Gemini (zelf passen, zonder betalende dienst) ----------
-const GARMENT_NL = { tshirt: 't-shirt', pull: 'pull', polo: 'polo', hemd: 'hemd', broek: 'broek', short: 'short' };
+const GARMENT_NL = { tshirt: 't-shirt', pull: 'pull', polo: 'polo', hemd: 'hemd', broek: 'broek', short: 'short', jas: 'jas', schoenen: 'schoenen', accessoire: 'accessoire' };
 let geminiPack = null; // { files: File[], prompt }
 const dataUrlToFile = async (dataUrl, name) => new File([await (await fetch(dataUrl)).blob()], name, { type: 'image/jpeg' });
 async function openGeminiExport() {
   if (!state.person) { toast('Voeg eerst je pasfoto toe'); return openMenu(); }
   const o = slotItems();
-  const parts = [o.onder, o.boven, o.laag].filter(Boolean);
+  const parts = SLOTS.map((sl) => o[sl.id]).filter(Boolean);
   const files = [await dataUrlToFile(state.person, '1-ik.jpg')];
   const lines = [];
   const thumbs = [state.person];
@@ -276,7 +357,7 @@ async function openGeminiExport() {
   } catch { return toast('Een kledingfoto kon niet gelezen worden'); }
   const prompt = `Foto 1 is een foto van mij. De andere foto's zijn productfoto's van kledingstukken. ${lines.join(' ')} `
     + 'Maak een fotorealistische foto van mij uit foto 1 waarop ik precies deze kledingstukken draag, met hun echte kleur, motief, stof en snit. '
-    + 'Vervang alleen de kleding. Behoud mijn gezicht, haar, lichaamsbouw, houding, schoenen, de achtergrond en het licht van foto 1. '
+    + 'Vervang alleen de kleding. Behoud mijn gezicht, haar, lichaamsbouw, houding, ' + (o.schoenen ? '' : 'schoenen, ') + 'de achtergrond en het licht van foto 1. '
     + 'De kleren zitten natuurlijk, met realistische plooien en schaduwen. Geef één beeld met dezelfde uitsnede als foto 1.';
   geminiPack = { files, prompt };
   const canShare = !!navigator.canShare?.({ files });
@@ -306,7 +387,7 @@ async function setFitResult(file) {
   try {
     const key = fitKey();
     const image = await toDataUrl(url, 1100);
-    await db.put('meta', { key: 'tryon:' + key, image, createdAt: Date.now() });
+    await db.put('extras', { id: 'fit:' + key, image, createdAt: Date.now() });
     state.fits.set(key, image);
     closeSheet();
     toast('Beeld toegevoegd aan deze outfit');
@@ -318,7 +399,7 @@ async function setPerson(file) {
   const url = URL.createObjectURL(file);
   try {
     state.person = await toDataUrl(url, 1024);
-    await db.put('meta', { key: 'pasfoto', image: state.person });
+    await db.put('extras', { id: 'pasfoto', image: state.person });
     toast('Pasfoto bewaard');
   } catch { toast('Deze foto kon niet gelezen worden'); }
   URL.revokeObjectURL(url);
@@ -326,7 +407,7 @@ async function setPerson(file) {
 }
 
 function slotsFromIds(itemIds) {
-  const o = { onder: null, boven: null, laag: null };
+  const o = emptyOutfit();
   itemIds.map(byId).filter(Boolean).forEach((it) => { o[slotOf(it.category)] = it; });
   return o;
 }
@@ -340,8 +421,10 @@ function pickForOutfit(id) {
 
 function surprise() {
   const pool = state.items.filter(seasonOk);
-  const bottoms = pool.filter((i) => CATS[i.category].group === 'bottom');
-  if (!bottoms.length) return toast('Voeg eerst een broek of short toe');
+  const allBottoms = pool.filter((i) => CATS[i.category].group === 'bottom');
+  if (!allBottoms.length) return toast('Voeg eerst een broek of short toe');
+  const fresh = allBottoms.filter((i) => !recentlyWorn(i));
+  const bottoms = fresh.length ? fresh : allBottoms;
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   const onder = pick(bottoms);
   const best = (cats, chosen) => pool.filter((i) => cats.includes(i.category))
@@ -354,7 +437,8 @@ function surprise() {
     const pulls = best(['pull'], [onder, boven]);
     if (pulls.length) laag = pick(pulls).i;
   }
-  state.outfit = { onder: onder.id, boven: boven?.id || null, laag: laag?.id || null };
+  const shoes = best(['schoenen'], [onder, boven, laag].filter(Boolean));
+  state.outfit = { ...emptyOutfit(), onder: onder.id, boven: boven?.id || null, laag: laag?.id || null, schoenen: shoes.length ? pick(shoes).i.id : null };
   render();
 }
 
@@ -383,6 +467,7 @@ function renderSaved() {
   return `
     <div class="view-head"><h1>Bewaarde outfits</h1>
     <p class="sub">${state.outfits.length ? 'Tik op een outfit om hem verder aan te passen.' : 'Nog geen outfits bewaard. Stel er een samen via "Outfit".'}</p></div>
+    ${plannerHtml()}
     <div class="outfits">${state.outfits.map((o) => {
       const items = o.itemIds.map(byId).filter(Boolean);
       return `<div class="outfit-card">
@@ -394,6 +479,68 @@ function renderSaved() {
         <button class="icon-btn" data-del-outfit="${o.id}" aria-label="Verwijderen">🗑</button>
       </div>`;
     }).join('')}</div>`;
+}
+
+// ---------- weekplanner en paklijst ----------
+function plannerHtml() {
+  if (!state.outfits.length) return '';
+  const days = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() + i); return d; });
+  return `<section class="planner">
+    <div class="planner-head"><h2>Deze week</h2><button class="btn" data-action="pack">🧳 Paklijst</button></div>
+    ${days.map((d, i) => {
+      const k = dayKey(d);
+      const label = i === 0 ? 'Vandaag' : i === 1 ? 'Morgen' : d.toLocaleDateString('nl-BE', { weekday: 'long' });
+      return `<label class="plan-row"><span>${label} <small>${d.getDate()}/${d.getMonth() + 1}</small></span>
+        <select data-plan="${k}"><option value="">—</option>${state.outfits.map((o) => `<option value="${o.id}" ${state.plan[k] === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></label>`;
+    }).join('')}
+  </section>`;
+}
+async function setPlan(day, outfitId) {
+  const today = dayKey();
+  const days = Object.fromEntries(Object.entries(state.plan).filter(([k]) => k >= today));
+  if (outfitId) days[day] = outfitId; else delete days[day];
+  state.plan = days;
+  await db.put('extras', { id: 'plan', days });
+}
+function openPack() {
+  openSheet(`
+    <h2>Paklijst</h2>
+    <p class="sub">Zo weinig mogelijk stukken die samen zo veel mogelijk outfits geven. Wat in de was zit, telt niet mee.</p>
+    <form class="form two" id="packForm">
+      <label>Aantal dagen<input type="number" name="days" min="1" max="21" value="4" inputmode="numeric"></label>
+      <label>Look<select name="look"><option value="alle">Alle</option>${LOOK_ORDER.map((k) => `<option value="${k}">${LOOKS[k].label}</option>`).join('')}</select></label>
+    </form>
+    <div id="packResult"></div>`);
+  const form = $('#packForm');
+  const show = () => {
+    const days = Math.max(1, Math.min(21, +form.days.value || 1));
+    const r = packList(state.items, state.overrides, days, form.look.value);
+    $('#packResult').innerHTML = r.items.length
+      ? `<p><strong>${r.items.length} stukken</strong>, goed voor ${r.combos} combinatie${r.combos === 1 ? '' : 's'} van onder- en bovenstuk.${r.enough ? '' : ` Dat is minder dan ${days} dagen: je kast heeft te weinig stukken die samen passen voor deze look.`}</p>
+        <div class="grid">${r.items.map((i) => card(i)).join('')}</div>`
+      : '<p class="sub">Geen stukken gevonden voor deze look.</p>';
+  };
+  form.addEventListener('input', show);
+  form.addEventListener('submit', (e) => e.preventDefault());
+  show();
+}
+
+// ---------- kastanalyse ----------
+function openAnalyse() {
+  const a = analyse(state.items, state.overrides);
+  const row = (i, extra) => `<li><img src="${esc(i.image)}" alt=""><div class="m-info"><strong>${esc(i.name)}</strong><span class="sub">${extra}</span></div></li>`;
+  const block = (title, html, empty) => `<h3>${title}</h3>${html ? `<ul class="matches">${html}</ul>` : `<p class="sub">${empty}</p>`}`;
+  const euro = (n) => '€ ' + n.toFixed(2).replace('.', ',');
+  openSheet(`
+    <h2>Kastanalyse</h2>
+    <p class="sub">${a.total} artikels. Het draaglogboek vult zich met de knop "Vandaag gedragen".</p>
+    <h3>Wat ontbreekt?</h3>
+    ${a.gaps.length ? `<ul class="plain">${a.gaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : '<p class="sub">Geen duidelijke gaten gevonden.</p>'}
+    ${block('Meest gedragen', a.most.map((i) => row(i, `${i.worn.length}× gedragen · ${wornLabel(i)}`)).join(''), 'Nog niets gelogd.')}
+    ${block(`Nog nooit gedragen (${a.never.length})`, a.never.slice(0, 8).map((i) => row(i, CATS[i.category].label)).join(''), 'Alles is al eens gedragen.')}
+    ${block('Moeilijk te combineren', a.hard.map(({ i, n }) => row(i, n ? 'past goed bij maar 1 ander stuk' : 'past bij geen enkel ander stuk goed')).join(''), 'Elk stuk heeft minstens twee goede combinaties.')}
+    ${block('Duurst per draagbeurt', a.costPerWear.map(({ i, cpw }) => row(i, `${euro(cpw)} per keer (${euro(i.price)}, ${i.worn.length}× gedragen)`)).join(''), 'Vul bij je artikels een aankoopprijs in om dit te zien.')}
+    ${a.unworn ? `<p class="sub">Ongedragen stukken met een prijs: samen ${euro(a.unworn)}.</p>` : ''}`, 'wide');
 }
 
 // ---------- artikel-detail ----------
@@ -419,7 +566,8 @@ function attrFields(it, prefix = '') {
     </fieldset>
     <fieldset class="seg"><legend>Seizoen</legend>
       ${Object.entries(SEASONS).map(([k, l]) => `<label><input type="radio" name="season" value="${k}" ${it.season === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}
-    </fieldset>`;
+    </fieldset>
+    <label>Aankoopprijs in euro <small>(optioneel, voor de prijs per draagbeurt)</small><input type="number" name="price" min="0" step="0.01" inputmode="decimal" value="${it.price ?? ''}"></label>`;
 }
 
 function readForm(form, base) {
@@ -432,6 +580,7 @@ function readForm(form, base) {
     pattern: f.get('pattern'),
     looks: f.getAll('looks'),
     season: f.get('season'),
+    price: f.get('price') ? +f.get('price') : null,
   };
 }
 
@@ -514,8 +663,11 @@ function openDetail(id) {
       </div>
       <form class="form" id="detailForm">
         ${attrFields(it)}
+        <p class="sub wear-info">${it.worn?.length ? `${it.worn.length}× gedragen · ${wornLabel(it)}` : 'Nog niet gedragen'}${it.wash ? ' · 🧺 in de was' : ''}</p>
         <div class="row-actions">
           <button type="button" class="btn primary" data-action="start-outfit" data-id="${it.id}">Maak outfit hiermee</button>
+          <button type="button" class="btn" data-action="wear-item" data-id="${it.id}">✓ Vandaag gedragen</button>
+          <button type="button" class="btn" data-action="toggle-wash" data-id="${it.id}">${it.wash ? 'Terug uit de was' : '🧺 In de was'}</button>
           <button type="button" class="btn" data-action="reanalyze" data-id="${it.id}">Kleur opnieuw inschatten</button>
           <button type="button" class="btn danger" data-action="delete" data-id="${it.id}">Verwijderen</button>
         </div>
@@ -549,8 +701,8 @@ function openAdd() {
         <span class="big">📷</span><strong>Foto maken</strong><span class="sub">met de camera</span>
       </label>
       <label class="source">
-        <input type="file" accept="image/*" data-file hidden>
-        <span class="big">🖼️</span><strong>Foto kiezen</strong><span class="sub">uit je bestanden</span>
+        <input type="file" accept="image/*" data-file multiple hidden>
+        <span class="big">🖼️</span><strong>Foto’s kiezen</strong><span class="sub">één of meerdere tegelijk</span>
       </label>
     </div>
     <form class="link-form" id="linkForm">
@@ -564,6 +716,7 @@ function openAdd() {
   sheet.querySelectorAll('[data-file]').forEach((inp) => inp.addEventListener('change', async () => {
     const file = inp.files[0];
     if (!file) return;
+    state.queue = [...inp.files].slice(1); // de rest komt hierna één voor één
     status('Foto inlezen…');
     try {
       const image = await fileToDataUrl(file);
@@ -581,6 +734,15 @@ function openAdd() {
       status(`${err.message}. Tip: open de foto in de webshop, kies "Afbeeldingsadres kopiëren" en plak die link hier.`, true);
     }
   });
+}
+async function nextInQueue() {
+  const file = state.queue.shift();
+  const left = state.queue;
+  openAdd();
+  state.queue = left;
+  status('Volgende foto inlezen…');
+  try { await step2({ image: await fileToDataUrl(file), name: '' }); }
+  catch (e) { status('Kon de foto niet lezen: ' + e.message, true); }
 }
 function status(msg, err) {
   const s = $('#addStatus');
@@ -609,8 +771,9 @@ async function step2({ image, name, sourceUrl = '' }) {
       </div>
       <form class="form" id="addForm">
         ${attrFields(draft).replace('<label>Naam<input name="name"', '<label>Welk stuk is het? <small>bv. "lichtblauwe jeans" of "zwarte polo"</small><input name="name" autocomplete="off"')}
+        <p class="sub buy-check" id="buyCheck"></p>
         <div class="row-actions">
-          <button class="btn primary">Opslaan</button>
+          <button class="btn primary">${state.queue.length ? `Opslaan en volgende (nog ${state.queue.length})` : 'Opslaan'}</button>
           <button type="button" class="btn ghost" data-close>Annuleren</button>
         </div>
       </form>
@@ -677,12 +840,27 @@ async function step2({ image, name, sourceUrl = '' }) {
     if (!touched.has('looks') && !g.looks) form.querySelectorAll('[name=looks]').forEach((b) => { b.checked = defaultLooks[c].includes(b.value); });
     if (!touched.has('season')) form.querySelector(`[name=season][value="${defaultSeason[c]}"]`).checked = true;
   });
+  // Koopcheck: hoe goed past dit stuk bij wat je al hebt?
+  const updateCheck = () => {
+    const el = $('#buyCheck');
+    const it = readForm(form, draft);
+    if (!el || !it.category) { if (el) el.textContent = ''; return; }
+    const r = fitsCloset(it, state.items, state.overrides);
+    el.innerHTML = `<strong>Past dit bij je kast?</strong> Combineert goed met ${r.good.length} van de ${r.of} stukken`
+      + (r.good.length ? `, o.a. ${r.good.slice(0, 3).map((o) => esc(o.name)).join(', ')}.` : '.')
+      + (r.twins.length ? ` Je hebt al ${r.twins.length} ${CATS[it.category].label.toLowerCase()} in ${colorName(it.hex)}.` : '');
+  };
+  form.addEventListener('input', () => setTimeout(updateCheck, 400));
+  form.addEventListener('change', updateCheck);
+  updateCheck();
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const item = readForm(form, draft);
     if (!item.category) return toast('Kies een categorie');
     await saveItem(item);
     toast('Toegevoegd');
+    if (state.queue.length) return nextInQueue();
     openDetail(item.id);
   });
 }
@@ -692,6 +870,8 @@ function openMenu() {
   openSheet(`
     <h2>Instellingen</h2>
     <div class="menu">
+      <button class="btn" data-action="analyse">📊 Kastanalyse</button>
+      ${state.items.some((i) => i.wash) ? '<button class="btn" data-action="wash-clear">🧺 Alles terug uit de was</button>' : ''}
       <button class="btn" data-action="export">Back-up downloaden (JSON)</button>
       <label class="btn">Back-up terugzetten<input type="file" accept="application/json" data-import hidden></label>
       <button class="btn" data-action="reseed">Testartikels opnieuw toevoegen</button>
@@ -700,7 +880,7 @@ function openMenu() {
     </div>
     <section class="sync-box" id="personBox">
       <h3>Mijn pasfoto</h3>
-      <p class="sub">Een foto van jezelf, rechtopstaand en volledig in beeld. Daarop past de app je outfits fotorealistisch (knop "Pas op mijn foto"). De foto blijft op dit toestel. Ze gaat enkel bij het passen naar het AI-model van fal.ai, of naar Gemini als je ze zelf deelt.</p>
+      <p class="sub">Een foto van jezelf, rechtopstaand en volledig in beeld. Daarop past de app je outfits fotorealistisch (knop "Pas op mijn foto"). De foto staat op dit toestel en, als synchronisatie aan staat, in je eigen Supabase. Ze gaat enkel bij het passen naar het AI-model van fal.ai, of naar Gemini als je ze zelf deelt.</p>
       ${state.person ? `<img class="person-img" src="${esc(state.person)}" alt="Je pasfoto">` : ''}
       <div class="row-actions">
         <label class="btn">${state.person ? 'Andere foto kiezen' : 'Pasfoto kiezen'}<input type="file" accept="image/*" data-person hidden></label>
@@ -788,7 +968,7 @@ async function refreshFromSync() {
 }
 
 async function exportBackup() {
-  const data = { app: 'kastwijzer', version: 1, exportedAt: new Date().toISOString(), items: state.items, outfits: state.outfits, overrides: [...state.overrides].map(([key, value]) => ({ key, value })) };
+  const data = { app: 'kastwijzer', version: 1, exportedAt: new Date().toISOString(), items: state.items, outfits: state.outfits, overrides: [...state.overrides].map(([key, value]) => ({ key, value })), extras: await db.all('extras') };
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `kastwijzer-${new Date().toISOString().slice(0, 10)}.json` });
   a.click();
@@ -804,6 +984,7 @@ async function importBackup(e) {
     await db.putMany('items', data.items);
     await db.putMany('outfits', data.outfits);
     await db.putMany('overrides', data.overrides);
+    if (Array.isArray(data.extras)) await db.putMany('extras', data.extras);
     await load();
     closeSheet();
     toast('Back-up teruggezet');
@@ -812,7 +993,68 @@ async function importBackup(e) {
 
 // ---------- acties ----------
 const actions = {
-  add: openAdd,
+  add: () => { state.queue = []; openAdd(); },
+  analyse: openAnalyse,
+  pack: openPack,
+  async 'wear-today'() {
+    const n = await wear(SLOTS.map((sl) => state.outfit[sl.id]).filter(Boolean).map(byId).filter(Boolean));
+    toast(n ? 'Genoteerd: vandaag gedragen' : 'Stond al genoteerd voor vandaag');
+    render();
+  },
+  async 'wear-item'(el) {
+    const n = await wear([byId(el.dataset.id)]);
+    toast(n ? 'Genoteerd: vandaag gedragen' : 'Stond al genoteerd voor vandaag');
+    openDetail(el.dataset.id);
+  },
+  async 'toggle-wash'(el) {
+    const it = byId(el.dataset.id);
+    await saveItem({ ...it, wash: !it.wash });
+    toast(it.wash ? 'Terug in de kast' : 'In de was: komt niet meer in voorstellen');
+    openDetail(it.id);
+  },
+  async 'wash-clear'() {
+    for (const it of state.items.filter((i) => i.wash)) await saveItem({ ...it, wash: false });
+    closeSheet(); render(); toast('Alles is terug uit de was');
+  },
+  async 'collage-zoom'() {
+    try {
+      const url = await collage(slotItems());
+      openSheet(`<h2>Deze outfit</h2><img class="fit-large" src="${url}" alt="De stukken van deze outfit naast elkaar">
+        <div class="row-actions"><button class="btn primary" data-action="collage-share">Delen of bewaren</button></div>
+        <p class="sub">Uitknippen werkt het best met een stuk op een effen achtergrond. Lukt het niet, dan zie je de foto als kaartje.</p>`);
+    } catch { toast('Het beeld kon niet gemaakt worden'); }
+  },
+  async 'collage-share'() {
+    const file = await dataUrlToFile(await collage(slotItems()), 'outfit.jpg');
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Mijn outfit' }); } catch { /* geannuleerd */ }
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('Beeld gedownload');
+  },
+  'weather-set'() {
+    const place = getPlace();
+    openSheet(`
+      <h2>Weer van vandaag</h2>
+      <p class="sub">De app haalt de verwachting op bij Open-Meteo (gratis) en stemt het seizoen en het advies erop af. Enkel de naam van je gemeente gaat naar die dienst.</p>
+      <form class="form" id="placeForm">
+        <label>Gemeente<input name="place" value="${esc(place?.name || '')}" placeholder="bv. Gent" required autocomplete="off"></label>
+        <div class="row-actions"><button class="btn primary">Bewaren</button>${place ? '<button type="button" class="btn" data-action="weather-forget">Weer niet meer gebruiken</button>' : ''}</div>
+      </form>`);
+    $('#placeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await setPlace(new FormData(e.target).get('place').trim());
+        state.seasonTouched = false;
+        closeSheet();
+        await refreshWeather();
+      } catch (err) { toast(err.message); }
+    });
+  },
+  'weather-forget'() { forgetPlace(); state.weather = null; closeSheet(); },
   surprise,
   'try-on': runTryOn,
   'gemini-export': openGeminiExport,
@@ -839,15 +1081,15 @@ const actions = {
   },
   async 'person-remove'() {
     if (!confirm('Je pasfoto en alle gepaste beelden wissen?')) return;
-    for (const m of await db.all('meta')) if (m.key === 'pasfoto' || m.key.startsWith('tryon:')) await db.del('meta', m.key);
+    for (const x of await db.all('extras')) if (x.id === 'pasfoto' || x.id.startsWith('fit:')) await db.del('extras', x.id);
     state.person = null; state.fits = new Map();
     openMenu(); render();
   },
   showall: () => { state.showAll = !state.showAll; render(); },
-  'reset-outfit': () => { state.outfit = { onder: null, boven: null, laag: null }; state.showAll = false; render(); },
+  'reset-outfit': () => { state.outfit = emptyOutfit(); state.showAll = false; render(); },
   'save-outfit': saveOutfit,
   'start-outfit': (el) => {
-    state.outfit = { onder: null, boven: null, laag: null };
+    state.outfit = emptyOutfit();
     closeSheet();
     pickForOutfit(el.dataset.id);
     setView('outfit');
@@ -924,8 +1166,8 @@ const actions = {
   },
   async wipe() {
     if (!confirm('Echt alles wissen? Dit kan niet ongedaan gemaakt worden.')) return;
-    await Promise.all(['items', 'outfits', 'overrides'].map((s) => db.clear(s)));
-    state.outfit = { onder: null, boven: null, laag: null };
+    await Promise.all(['items', 'outfits', 'overrides', 'extras'].map((s) => db.clear(s)));
+    state.outfit = emptyOutfit();
     await load(); closeSheet(); toast('Alles gewist');
   },
 };
@@ -953,7 +1195,7 @@ document.addEventListener('click', async (e) => {
   const openO = t.closest('[data-open-outfit]');
   if (openO) {
     const o = state.outfits.find((x) => x.id === openO.dataset.openOutfit);
-    state.outfit = { onder: null, boven: null, laag: null };
+    state.outfit = emptyOutfit();
     o.itemIds.filter(byId).forEach((id) => { state.outfit[slotOf(byId(id).category)] = id; });
     state.look = o.look || 'alle';
     return setView('outfit');
@@ -972,8 +1214,14 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-fitresult]')) { if (e.target.files[0]) setFitResult(e.target.files[0]); return; }
   if (e.target.matches('[data-person]')) { if (e.target.files[0]) setPerson(e.target.files[0]); return; }
   if (e.target.matches('[data-addphoto]')) { addPhotos(e.target.dataset.addphoto, e.target.files); return; }
-  if (e.target.matches('[data-season]')) { state.season = e.target.value; render(); }
+  if (e.target.matches('[data-plan]')) { setPlan(e.target.dataset.plan, e.target.value); return; }
+  if (e.target.matches('[data-season]')) { state.season = e.target.value; state.seasonTouched = true; render(); }
   if (e.target.matches('[data-look]')) { state.look = e.target.value; render(); }
+});
+document.addEventListener('input', (e) => {
+  if (!e.target.matches('[data-search]')) return;
+  state.q = e.target.value;
+  $('#closetGrid').innerHTML = closetGrid();
 });
 $('#menuBtn').addEventListener('click', openMenu);
 $('#syncBtn').addEventListener('click', openMenu);
@@ -991,12 +1239,24 @@ function render() {
   const v = $('#view');
   v.innerHTML = state.view === 'kast' ? renderCloset() : state.view === 'outfit' ? renderOutfit() : renderSaved();
   $('#fab').hidden = state.view !== 'kast';
+  paintCollage();
 }
 
-load().then(() => { render(); initSync(refreshFromSync); }).catch((e) => {
+load().then(() => { render(); initSync(refreshFromSync); refreshWeather(); }).catch((e) => {
   $('#view').innerHTML = `<div class="empty"><p>De app kon niet starten: ${esc(e.message)}</p></div>`;
 });
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Nieuwe versie geladen terwijl de app open staat: vraag om te herladen.
+  if (navigator.serviceWorker.controller) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if ($('.update-bar')) return;
+      const bar = document.createElement('div');
+      bar.className = 'update-bar';
+      bar.innerHTML = '<span>Er is een nieuwe versie van Kastwijzer.</span><button class="btn primary">Herladen</button>';
+      bar.querySelector('button').addEventListener('click', () => location.reload());
+      document.body.appendChild(bar);
+    });
+  }
 }

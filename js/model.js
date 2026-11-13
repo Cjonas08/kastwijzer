@@ -7,15 +7,22 @@ export const CATS = {
   pull:   { label: 'Pull',    plural: 'Pulls',    group: 'top', layer: 'mid' },
   broek:  { label: 'Broek',   plural: 'Broeken',  group: 'bottom' },
   short:  { label: 'Short',   plural: 'Shorts',   group: 'bottom' },
+  jas:    { label: 'Jas',     plural: 'Jassen',   group: 'outer' },
+  schoenen:   { label: 'Schoenen',   plural: 'Schoenen',    group: 'shoes' },
+  accessoire: { label: 'Accessoire', plural: 'Accessoires', group: 'acc' },
 };
-export const CAT_ORDER = ['tshirt', 'polo', 'hemd', 'pull', 'broek', 'short'];
+export const CAT_ORDER = ['tshirt', 'polo', 'hemd', 'pull', 'broek', 'short', 'jas', 'schoenen', 'accessoire'];
 
 // Een outfit heeft drie vakken: onderstuk, bovenstuk en (optioneel) een pull erover.
 export const SLOTS = [
   { id: 'onder', label: 'Onderstuk', cats: ['broek', 'short'] },
   { id: 'boven', label: 'Bovenstuk', cats: ['tshirt', 'polo', 'hemd'] },
   { id: 'laag',  label: 'Pull erover', cats: ['pull'], optional: true },
+  { id: 'jas',   label: 'Jas', cats: ['jas'], optional: true },
+  { id: 'schoenen', label: 'Schoenen', cats: ['schoenen'], optional: true },
+  { id: 'accessoire', label: 'Accessoire', cats: ['accessoire'], optional: true },
 ];
+export const emptyOutfit = () => Object.fromEntries(SLOTS.map((s) => [s.id, null]));
 export const slotOf = (cat) => SLOTS.find((s) => s.cats.includes(cat)).id;
 
 export const PATTERNS = { effen: 'Effen', streep: 'Streep', ruit: 'Ruit', print: 'Print / logo', motief: 'Ander motief' };
@@ -41,11 +48,14 @@ export const defaultLooks = {
   pull: ['casual', 'casualchique', 'business'],
   broek: ['casualchique', 'business'],
   short: ['casual'],
+  jas: ['casual', 'casualchique', 'business'],
+  schoenen: ['casual', 'casualchique'],
+  accessoire: ['casual', 'casualchique', 'business', 'chique'],
 };
 // Omzetting van de oude stijlschaal (1 casual, 2 smart casual, 3 net).
 export const looksFromFormality = (f) => ({ 1: ['casual'], 2: ['casual', 'casualchique'], 3: ['chique', 'gekleed'] }[f] || ['casual']);
 
-export const defaultSeason = { tshirt: 'zomer', polo: 'zomer', hemd: 'altijd', pull: 'winter', broek: 'altijd', short: 'zomer' };
+export const defaultSeason = { tshirt: 'zomer', polo: 'zomer', hemd: 'altijd', pull: 'winter', broek: 'altijd', short: 'zomer', jas: 'winter', schoenen: 'altijd', accessoire: 'altijd' };
 
 export const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 

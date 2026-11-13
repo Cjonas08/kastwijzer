@@ -1,9 +1,10 @@
 // Kleine IndexedDB-wrapper. Alles staat eerst lokaal op het toestel; sync.js stuurt
 // wijzigingen door naar Supabase als synchronisatie aan staat.
 const DB_NAME = 'kastwijzer';
-const VERSION = 2;
-export const SYNCED = ['items', 'outfits', 'overrides'];
-const KEY = { items: 'id', outfits: 'id', overrides: 'key' };
+const VERSION = 3;
+// extras: pasfoto, gepaste beelden en de weekplanning.
+export const SYNCED = ['items', 'outfits', 'overrides', 'extras'];
+const KEY = { items: 'id', outfits: 'id', overrides: 'key', extras: 'id' };
 let dbPromise;
 const listeners = new Set();
 
@@ -21,6 +22,7 @@ function open() {
         }
         // Verwijderde records onthouden, zodat het andere toestel ze ook kan wissen.
         if (e.oldVersion < 2) d.createObjectStore('tombstones', { keyPath: 'key' });
+        if (e.oldVersion < 3) d.createObjectStore('extras', { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);

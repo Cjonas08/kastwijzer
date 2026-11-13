@@ -11,6 +11,10 @@ const cors = {
 };
 const MODEL = Deno.env.get('FAL_MODEL') || 'fal-ai/nano-banana/edit';
 const MAX_IMAGE_CHARS = 3_000_000; // ± 2 MB per foto
+// Wie mag passen? Secret ALLOWED_EMAILS = jouw adres(sen), gescheiden door komma's. Leeg = elke ingelogde gebruiker.
+const ALLOWED = (Deno.env.get('ALLOWED_EMAILS') || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
+// Maximum aantal beelden per dag per gebruiker (secret DAILY_LIMIT, standaard 20).
+const DAILY_LIMIT = Number(Deno.env.get('DAILY_LIMIT') || 20);
 const isImage = (s: unknown) => typeof s === 'string' && s.startsWith('data:image/') && s.length < MAX_IMAGE_CHARS;
 
 Deno.serve(async (req) => {
@@ -23,6 +27,15 @@ Deno.serve(async (req) => {
   });
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return fail(401, 'Niet ingelogd');
+  if (ALLOWED.length && !ALLOWED.includes((user.email || '').toLowerCase())) return fail(403, 'Dit account mag de pasbeurt niet gebruiken.');
+
+  // Daglimiet: teller in de tabel tryon_usage, enkel bereikbaar met de service role.
+  const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+  const day = new Date().toISOString().slice(0, 10);
+  const usage = await admin.from('tryon_usage').select('count').eq('user_id', user.id).eq('day', day).maybeSingle();
+  if (usage.error) return fail(503, 'De tabel tryon_usage ontbreekt: voer supabase/setup.sql opnieuw uit (zie SETUP.md).');
+  const used = usage.data?.count || 0;
+  if (used >= DAILY_LIMIT) return fail(429, `Daglimiet bereikt (${DAILY_LIMIT} beelden). Morgen kan je weer passen.`);
 
   const key = Deno.env.get('FAL_KEY');
   if (!key) return fail(503, 'De secret FAL_KEY ontbreekt in Supabase (zie SETUP.md).');
@@ -33,7 +46,7 @@ Deno.serve(async (req) => {
   } catch {
     return fail(400, 'Ongeldige aanvraag');
   }
-  if (!isImage(person) || !Array.isArray(garments) || !garments.length || garments.length > 3 || !garments.every((g) => isImage(g?.image))) {
+  if (!isImage(person) || !Array.isArray(garments) || !garments.length || garments.length > 6 || !garments.every((g) => isImage(g?.image))) {
     return fail(400, 'Ongeldige of te grote foto');
   }
 
@@ -55,6 +68,7 @@ Deno.serve(async (req) => {
     const detail = (await res.text()).slice(0, 300);
     return fail(502, res.status === 401 || res.status === 403 ? 'fal.ai weigert de sleutel (FAL_KEY) of het tegoed is op.' : `fal.ai antwoordde met ${res.status}: ${detail}`);
   }
+  await admin.from('tryon_usage').upsert({ user_id: user.id, day, count: used + 1 });
   const out = await res.json();
   const url = out?.images?.[0]?.url;
   if (!url) return fail(502, 'Het model gaf geen beeld terug. Probeer opnieuw of met een andere pasfoto.');

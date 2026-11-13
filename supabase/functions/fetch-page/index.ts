@@ -25,6 +25,8 @@ Deno.serve(async (req) => {
   });
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return fail(401, 'Niet ingelogd');
+  const allowed = (Deno.env.get('ALLOWED_EMAILS') || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
+  if (allowed.length && !allowed.includes((user.email || '').toLowerCase())) return fail(403, 'Dit account mag deze functie niet gebruiken.');
 
   let url: URL;
   try {

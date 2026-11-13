@@ -4,7 +4,7 @@
 -- 1. Tabel: één rij per artikel, outfit of aanpassing.
 create table if not exists public.records (
   user_id        uuid        not null default auth.uid() references auth.users (id) on delete cascade,
-  store          text        not null check (store in ('items', 'outfits', 'overrides')),
+  store          text        not null check (store in ('items', 'outfits', 'overrides', 'extras')),
   id             text        not null,
   data           jsonb,
   updated_at     bigint      not null,              -- tijdstip van de wijziging op het toestel (ms)
@@ -46,3 +46,18 @@ create policy "eigen fotos wijzigen" on storage.objects for update to authentica
   using (bucket_id = 'photos' and (storage.foldername(name))[1] = auth.uid()::text);
 create policy "eigen fotos verwijderen" on storage.objects for delete to authenticated
   using (bucket_id = 'photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+
+-- Bestaande installatie bijwerken: ook 'extras' toelaten (pasfoto, gepaste beelden, weekplanning).
+alter table public.records drop constraint if exists records_store_check;
+alter table public.records add constraint records_store_check check (store in ('items', 'outfits', 'overrides', 'extras'));
+
+-- Teller voor de betalende pasbeurt (functie try-on): hoeveel beelden per dag per gebruiker.
+-- Geen policies: enkel de functie zelf (service role) kan hier lezen en schrijven.
+create table if not exists public.tryon_usage (
+  user_id uuid not null references auth.users on delete cascade,
+  day     date not null,
+  count   int  not null default 0,
+  primary key (user_id, day)
+);
+alter table public.tryon_usage enable row level security;

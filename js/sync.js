@@ -93,7 +93,7 @@ const hashFromPath = (path) => path.split('-').pop().replace(/\.jpg$/, '');
 
 async function imageToRemote(src, id, c, uid, uploaded) {
   if (!String(src).startsWith('data:')) return { ref: src };
-  const path = `${uid}/${id}-${await sha1(src)}.jpg`;
+  const path = `${uid}/${String(id).replace(/[^\w]/g, '_')}-${await sha1(src)}.jpg`;
   if (!uploaded.includes(path)) {
     const { error } = await c.storage.from(BUCKET).upload(path, await dataUrlToBlob(src), { upsert: true, contentType: 'image/jpeg' });
     if (error) throw error;
@@ -104,20 +104,23 @@ async function imageToRemote(src, id, c, uid, uploaded) {
 // Geeft { data, extra } terug: extra wordt na verzending lokaal bewaard (welke foto's al online staan).
 async function toRemote(store, value, c, uid) {
   const { updatedAt, syncedAt, uploaded = [], imagePath, ...data } = value;
-  if (store !== 'items') return { data };
+  if (store !== 'items' && store !== 'extras') return { data };
+  if (store === 'extras' && !value.image) return { data };
   const refs = [], paths = [];
   for (const src of [value.image, ...(value.photos || [])]) {
     const r = await imageToRemote(src, value.id, c, uid, uploaded.concat(imagePath ? [imagePath] : []));
     refs.push(r.ref);
     if (r.path) paths.push(r.path);
   }
+  if (store === 'extras') return { data: { ...data, image: refs[0] }, extra: { uploaded: paths } };
   return { data: { ...data, image: refs[0], photos: refs.slice(1) }, extra: { uploaded: paths } };
 }
 
 async function fromRemote(store, data, updatedAt, c) {
   const v = { ...data, updatedAt, syncedAt: updatedAt };
-  if (store !== 'items') return v;
-  const local = await db.get('items', data.id);
+  if (store !== 'items' && store !== 'extras') return v;
+  if (store === 'extras' && !data.image) return v;
+  const local = await db.get(store, data.id);
   const localImgs = local ? [local.image, ...(local.photos || [])].filter((x) => String(x).startsWith('data:')) : [];
   const localHashes = await Promise.all(localImgs.map(sha1));
   const resolve = async (ref) => {
@@ -133,7 +136,7 @@ async function fromRemote(store, data, updatedAt, c) {
   const imgs = [];
   for (const r of refs) imgs.push(await resolve(r));
   v.image = imgs[0];
-  v.photos = imgs.slice(1);
+  if (store === 'items') v.photos = imgs.slice(1);
   v.uploaded = refs.filter((r) => String(r).startsWith('sb:')).map((r) => r.slice(3));
   delete v.imagePath;
   return v;

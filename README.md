@@ -20,7 +20,12 @@ Open daarna http://localhost:8765.
 - `js/db.js`: opslag in IndexedDB (lokaal op het toestel), met bijhouden van wijzigingen
 - `js/sync.js`: synchronisatie met Supabase (inloggen per mail, foto's in Storage)
 - `js/config.js`: Supabase-adres en publieke sleutel (optioneel)
-- `supabase/`: SQL-script en de functie `fetch-page` voor webshoplinks
+- `js/figure.js`, `js/crop.js`: paspop en uitsnijden van één stuk uit een foto
+- `js/cutout.js`, `js/collage.js`: achtergrond wegknippen op het toestel en de outfit neerleggen als beeld
+- `js/insights.js`: draaglogboek, weeradvies, paklijst, kastanalyse en koopcheck (rekenwerk)
+- `js/weather.js`: weer van vandaag via Open-Meteo
+- `supabase/`: SQL-script en de functies `fetch-page` (webshoplinks) en `try-on` (betalende pasbeurt)
+- `tests/`: automatische tests, open `tests/` in de browser
 
 Instellen van synchronisatie en hosting: zie [SETUP.md](SETUP.md).
 

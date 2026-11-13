@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kastwijzer tests</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; color: #1c1b19; background: #faf8f4; }
+    h1 { font-size: 1.3rem; }
+    #summary { font-weight: 600; padding: 8px 12px; border-radius: 8px; display: inline-block; }
+    .good { color: #1f6b3a; } .bad { color: #a12a22; }
+    #summary.good { background: #dff2e4; } #summary.bad { background: #f8dcd9; }
+    ul { list-style: none; padding: 0; } li { padding: 3px 0; } em { color: #6f6a62; }
+  </style>
+</head>
+<body>
+  <h1>Kastwijzer: automatische tests</h1>
+  <p id="summary">Bezig…</p>
+  <ul id="list"></ul>
+  <script type="module" src="tests.js"></script>
+</body>
+</html>
