@@ -1,11 +1,11 @@
 import { db } from './db.js';
 import { CATS, CAT_ORDER, SLOTS, slotOf, PATTERNS, SEASONS, LOOKS, LOOK_ORDER, defaultLooks, looksFromFormality, defaultSeason, colorName, uid } from './model.js';
-import { estimate, analyzeImage, fileToDataUrl, importFromLink, guessFromText } from './analyze.js';
+import { estimate, analyzeImage, fileToDataUrl, toDataUrl, importFromLink, guessFromText } from './analyze.js';
 import { mountCropper } from './crop.js';
 import { compatible, score, verdict, outfitScore, pairKey } from './match.js';
 import { SEED_ITEMS, SEED_OVERRIDES } from './seed.js';
 import { outfitFigure } from './figure.js';
-import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut } from './sync.js';
+import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut, tryOn } from './sync.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -20,6 +20,9 @@ const state = {
   showAll: false,
   season: 'alle',
   look: 'alle',
+  person: null,      // pasfoto van de gebruiker (enkel op dit toestel)
+  fits: new Map(),   // gepaste outfits: sleutel van de stukken -> foto
+  fitting: false,
 };
 const byId = (id) => state.items.find((i) => i.id === id);
 
@@ -36,6 +39,9 @@ async function load() {
   }
   state.outfits = (await db.all('outfits')).sort((a, b) => b.createdAt - a.createdAt);
   state.overrides = new Map((await db.all('overrides')).map((o) => [o.key, o.value]));
+  const metas = await db.all('meta');
+  state.person = metas.find((m) => m.key === 'pasfoto')?.image || null;
+  state.fits = new Map(metas.filter((m) => m.key.startsWith('tryon:')).map((m) => [m.key.slice(6), m.image]));
 }
 async function seed() {
   await db.putMany('items', SEED_ITEMS);
@@ -72,7 +78,9 @@ function openSheet(html, cls = '') {
   sheet.innerHTML = `<button class="sheet-close" data-close aria-label="Sluiten">✕</button>${html}`;
   if (!sheet.open) sheet.showModal();
   sheet.scrollTop = 0;
+  sheet.appendChild(toastEl); // de melding moet in het venster zitten om zichtbaar te blijven
 }
+sheet.addEventListener('close', () => document.body.appendChild(toastEl));
 function closeSheet() { if (sheet.open) sheet.close(); }
 sheet.addEventListener('click', (e) => {
   if (e.target === sheet || e.target.closest('[data-close]')) closeSheet();
@@ -182,12 +190,19 @@ function renderOutfit() {
       const why = [...new Set(pairs.flatMap((p) => p.override ? [p.override === 'yes' ? 'door jou goedgekeurd' : 'door jou afgekeurd'] : p.why))];
       info = `<div>${badge(total)}</div><p class="sub">${why.join(' · ')}</p>`;
     }
+    const fit = state.fits.get(fitKey());
+    const fitBtn = state.fitting
+      ? '<button class="btn" disabled>📸 Bezig… (± 20 s)</button>'
+      : `<button class="btn" data-action="try-on">📸 ${fit ? 'Opnieuw passen' : 'Pas op mijn foto'}</button>`;
     body = `<section class="preview">
-      <div class="preview-fig">${outfitFigure(slotItems(), { width: 150 })}</div>
+      <div class="preview-fig">${fit
+        ? `<button class="fit-btn" data-action="fit-zoom" aria-label="Vergroten"><img class="fit-img" src="${esc(fit)}" alt="Jij in deze outfit"></button>`
+        : outfitFigure(slotItems(), { width: 150 })}</div>
       <div class="preview-info">
         <h2>Zo ziet het eruit</h2>
         ${info}
-        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button></div>` : ''}
+        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button>${fitBtn}</div>
+          <p class="sub fit-note">Passen op je eigen foto kost ± €0,04 per beeld (fal.ai).</p>` : ''}
       </div>
     </section>` + body;
     if (state.showAll) body += `<button class="link" data-action="showall">Verberg wat niet past</button>`;
@@ -211,6 +226,45 @@ function renderOutfit() {
 }
 
 const slotItems = (ids = state.outfit) => ({ onder: ids.onder && byId(ids.onder), boven: ids.boven && byId(ids.boven), laag: ids.laag && byId(ids.laag) });
+// ---------- pasbeurt op eigen foto ----------
+const fitKeyOf = (ids) => [...ids].filter(Boolean).sort().join('+');
+const fitKey = () => fitKeyOf(SLOTS.map((s) => state.outfit[s.id]));
+const GARMENT_EN = { tshirt: 't-shirt', pull: 'sweater', polo: 'polo shirt', hemd: 'button-up shirt', broek: 'long trousers', short: 'shorts' };
+async function runTryOn() {
+  if (state.fitting) return;
+  if (!state.person) { toast('Voeg eerst je pasfoto toe'); return openMenu(); }
+  const o = slotItems();
+  const key = fitKey();
+  const parts = [o.onder, o.boven, o.laag].filter(Boolean);
+  state.fitting = true; render();
+  try {
+    const garments = [];
+    for (const it of parts) {
+      const layered = o.laag && o.boven && it === o.laag ? ', worn over the shirt' : '';
+      garments.push({ image: await toDataUrl(it.image, 768), label: `${GARMENT_EN[it.category]}${layered}` });
+    }
+    const blob = await tryOn(state.person, garments);
+    const url = URL.createObjectURL(blob);
+    const image = await toDataUrl(url, 1100).finally(() => URL.revokeObjectURL(url));
+    await db.put('meta', { key: 'tryon:' + key, image, createdAt: Date.now() });
+    state.fits.set(key, image);
+    toast('Klaar! Tik op de foto om te vergroten.');
+  } catch (err) {
+    toast('Passen lukte niet: ' + (err.message || err));
+  }
+  state.fitting = false; render();
+}
+async function setPerson(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    state.person = await toDataUrl(url, 1024);
+    await db.put('meta', { key: 'pasfoto', image: state.person });
+    toast('Pasfoto bewaard');
+  } catch { toast('Deze foto kon niet gelezen worden'); }
+  URL.revokeObjectURL(url);
+  if ($('#personBox')) openMenu();
+}
+
 function slotsFromIds(itemIds) {
   const o = { onder: null, boven: null, laag: null };
   itemIds.map(byId).filter(Boolean).forEach((it) => { o[slotOf(it.category)] = it; });
@@ -273,7 +327,7 @@ function renderSaved() {
       const items = o.itemIds.map(byId).filter(Boolean);
       return `<div class="outfit-card">
         <button class="outfit-open" data-open-outfit="${o.id}">
-          <div class="outfit-imgs"><span class="mini-fig">${outfitFigure(slotsFromIds(o.itemIds), { width: 58 })}</span>${items.map((i) => `<img src="${esc(i.image)}" alt="">`).join('')}</div>
+          <div class="outfit-imgs">${state.fits.has(fitKeyOf(o.itemIds)) ? `<img class="mini-fit" src="${esc(state.fits.get(fitKeyOf(o.itemIds)))}" alt="">` : `<span class="mini-fig">${outfitFigure(slotsFromIds(o.itemIds), { width: 58 })}</span>`}${items.map((i) => `<img src="${esc(i.image)}" alt="">`).join('')}</div>
           <strong>${esc(o.name)}</strong>${o.look && LOOKS[o.look] ? `<span class="badge kan small">${LOOKS[o.look].label}</span>` : ''}
           <span class="sub">${items.map((i) => esc(i.name)).join(' · ')}</span>
         </button>
@@ -584,6 +638,15 @@ function openMenu() {
       <button class="btn" data-action="remove-tests">Testartikels verwijderen</button>
       <button class="btn danger" data-action="wipe">Alles wissen</button>
     </div>
+    <section class="sync-box" id="personBox">
+      <h3>Mijn pasfoto</h3>
+      <p class="sub">Een foto van jezelf, rechtopstaand en volledig in beeld. Daarop past de app je outfits fotorealistisch (knop "Pas op mijn foto"). De foto blijft op dit toestel en gaat enkel bij het passen naar het AI-model van fal.ai.</p>
+      ${state.person ? `<img class="person-img" src="${esc(state.person)}" alt="Je pasfoto">` : ''}
+      <div class="row-actions">
+        <label class="btn">${state.person ? 'Andere foto kiezen' : 'Pasfoto kiezen'}<input type="file" accept="image/*" data-person hidden></label>
+        ${state.person ? '<button class="btn danger" data-action="person-remove">Pasfoto en gepaste beelden wissen</button>' : ''}
+      </div>
+    </section>
     <section class="sync-box" id="syncBox"><h3>Synchroniseren</h3><p class="sub">Laden…</p></section>
     <div class="about">
       <h3>Hoe werkt de inschatting?</h3>
@@ -691,6 +754,17 @@ async function importBackup(e) {
 const actions = {
   add: openAdd,
   surprise,
+  'try-on': runTryOn,
+  'fit-zoom'() {
+    const fit = state.fits.get(fitKey());
+    if (fit) openSheet(`<h2>Jij in deze outfit</h2><img class="fit-large" src="${esc(fit)}" alt="Jij in deze outfit"><p class="sub">Door AI gemaakt beeld: pasvorm en details kunnen afwijken van de echte stukken.</p>`);
+  },
+  async 'person-remove'() {
+    if (!confirm('Je pasfoto en alle gepaste beelden wissen?')) return;
+    for (const m of await db.all('meta')) if (m.key === 'pasfoto' || m.key.startsWith('tryon:')) await db.del('meta', m.key);
+    state.person = null; state.fits = new Map();
+    openMenu(); render();
+  },
   showall: () => { state.showAll = !state.showAll; render(); },
   'reset-outfit': () => { state.outfit = { onder: null, boven: null, laag: null }; state.showAll = false; render(); },
   'save-outfit': saveOutfit,
@@ -817,6 +891,7 @@ document.addEventListener('click', async (e) => {
   if (c && !sheet.contains(c)) return openDetail(c.dataset.id);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.matches('[data-person]')) { if (e.target.files[0]) setPerson(e.target.files[0]); return; }
   if (e.target.matches('[data-addphoto]')) { addPhotos(e.target.dataset.addphoto, e.target.files); return; }
   if (e.target.matches('[data-season]')) { state.season = e.target.value; render(); }
   if (e.target.matches('[data-look]')) { state.look = e.target.value; render(); }

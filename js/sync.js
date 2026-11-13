@@ -234,6 +234,21 @@ async function fetchViaFunction(url, as) {
   return data instanceof Blob ? data : new Blob([data]);
 }
 
+// Fotorealistische pasbeurt via de eigen Supabase-functie "try-on" (betalend, via fal.ai).
+// person en garments[].image zijn data-URL's. Geeft een Blob met het beeld terug.
+export async function tryOn(person, garments) {
+  const c = await getClient();
+  if (!c || !(await currentUser())) throw new Error('Log eerst in via Instellingen → Synchroniseren.');
+  const { data, error } = await c.functions.invoke('try-on', { body: { person, garments } });
+  if (error) {
+    let msg = error.message;
+    try { msg = (await error.context.json()).error || msg; } catch { /* geen JSON-antwoord */ }
+    if (/not found|404/i.test(msg)) msg = 'De functie "try-on" staat nog niet in Supabase (zie SETUP.md).';
+    throw new Error(msg);
+  }
+  return data instanceof Blob ? data : new Blob([data], { type: 'image/jpeg' });
+}
+
 export async function initSync(refresh) {
   onPulled = refresh;
   const c = await getClient().catch((e) => { setStatus('fout', 'Supabase kon niet laden: ' + e.message); return null; });

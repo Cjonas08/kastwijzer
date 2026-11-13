@@ -37,6 +37,20 @@ Zonder deze functie haalt de app webshoppagina's op via een publieke tussendiens
 3. Ofwel vul je ze in de app in via **⚙︎ Instellingen → Synchroniseren** (op elk toestel één keer), ofwel zet je ze in [`js/config.js`](js/config.js), dan gelden ze meteen overal.
 4. Log in met je e-mailadres, op pc én gsm met **hetzelfde** adres. Klaar: wijzigingen komen binnen enkele seconden op het andere toestel.
 
+### 6. Passen op je eigen foto (optioneel, betalend)
+Met de knop **📸 Pas op mijn foto** tekent een AI-model je outfit fotorealistisch op je eigen foto. Dat loopt via [fal.ai](https://fal.ai) en kost ongeveer € 0,04 per beeld (model `fal-ai/nano-banana/edit`, $ 0,0398 per beeld bij het schrijven van deze handleiding). Je betaalt enkel wat je gebruikt.
+1. Maak een account op [fal.ai](https://fal.ai), zet er een klein tegoed op (bv. $ 5) en maak onder **API Keys** een sleutel aan.
+2. In Supabase: **Edge Functions → Secrets** → voeg een secret toe met naam `FAL_KEY` en als waarde je fal-sleutel. Zet die sleutel nooit in de app of in GitHub.
+3. **Edge Functions → Deploy a new function → Via Editor**, naam: `try-on` (precies zo). Vervang de voorbeeldcode door de inhoud van [`supabase/functions/try-on/index.ts`](supabase/functions/try-on/index.ts) en klik **Deploy**.
+4. In de app: **⚙︎ Instellingen → Mijn pasfoto** → kies een foto waarop je rechtop en volledig in beeld staat. Stel een outfit samen en tik op **📸 Pas op mijn foto**.
+
+Goed om te weten:
+- Je moet ingelogd zijn (stap 5). Zo kan niemand anders op jouw kosten beelden maken.
+- Je pasfoto blijft op het toestel waar je ze koos. Bij het passen gaan ze samen met de kledingfoto's naar fal.ai.
+- Een gepast beeld wordt op je toestel bewaard, dus dezelfde outfit opnieuw bekijken kost niets. Enkel **Opnieuw passen** kost opnieuw.
+- Het beeld is door AI gemaakt: pasvorm en details kunnen afwijken van het echte stuk.
+- Een ander model proberen kan met een extra secret `FAL_MODEL` (een fal-model dat `prompt` en `image_urls` aanvaardt).
+
 ---
 
 ## Deel 2: Online zetten met GitHub Pages
