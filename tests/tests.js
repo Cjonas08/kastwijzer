@@ -4,7 +4,7 @@ import { compatible, autoScore, score, verdict, outfitScore, pairKey, learnPrefs
 import { guessFromText } from '../js/analyze.js';
 import { maskFromPixels } from '../js/cutout.js';
 import { layout } from '../js/collage.js';
-import { dayKey, daysAgo, wornLabel, recentlyWorn, weatherAdvice, packList, analyse, fitsCloset } from '../js/insights.js';
+import { dayKey, daysAgo, wornLabel, recentlyWorn, weatherAdvice, packList, analyse, fitsCloset, suggestAdditions } from '../js/insights.js';
 
 const results = [];
 function test(name, fn) {
@@ -158,6 +158,23 @@ test('koopcheck telt goede combinaties en dubbels', () => {
   const r = fitsCloset(nieuw, closet, none);
   ok(r.good.some((o) => o.id === 'chino')); eq(r.twins.map((o) => o.id), ['tee']);
   ok(r.of === closet.filter((o) => compatible(nieuw, o)).length);
+});
+
+test('aanvuladvies: stelt enkel voor wat je nog niet hebt en wat goed combineert', () => {
+  const ideas = suggestAdditions(closet, none);
+  ok(ideas.length > 0 && ideas.length <= 6, 'aantal voorstellen');
+  for (const d of ideas) {
+    ok(!closet.some((i) => i.category === d.category && colorName(i.hex) === d.colorName), `${d.category} in ${d.colorName} zit al in de kast`);
+    ok(d.fits.length >= 2 && d.fits.length <= d.of);
+  }
+  ok(ideas.filter((d) => d.category === ideas[0].category).length <= 2, 'hoogstens twee per categorie');
+  ok(ideas.some((d) => d.isNew), 'een ontbrekende categorie (jas, schoenen, short) komt aan bod');
+  eq(suggestAdditions([navyChino, whiteTee], none), []);
+});
+test('aanvuladvies: bij enkel felle bovenstukken komt een neutraal onderstuk bovenaan', () => {
+  const tops = ['#b3302f', '#3f7a4a', '#e07b39', '#6a4c93'].map((hex, i) => item('t' + i, 'tshirt', hex));
+  const ideas = suggestAdditions(tops, none);
+  ok(['broek', 'short'].includes(ideas[0].category), `eerste voorstel is ${ideas[0].category}`);
 });
 
 // ---------- verslag ----------

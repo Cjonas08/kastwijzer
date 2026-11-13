@@ -1,5 +1,5 @@
 // Offline-ondersteuning: app-bestanden uit de cache, foto's van Unsplash bijhouden na het eerste laden.
-const VERSION = 'kastwijzer-v6';
+const VERSION = 'kastwijzer-v7';
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'js/app.js', 'js/db.js', 'js/model.js', 'js/analyze.js', 'js/match.js', 'js/seed.js', 'js/sync.js', 'js/config.js', 'js/figure.js', 'js/crop.js', 'js/cutout.js', 'js/collage.js', 'js/weather.js', 'js/insights.js'];
 

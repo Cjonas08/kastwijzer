@@ -1,5 +1,5 @@
 // Rekenwerk zonder scherm: weeradvies, draaglogboek, paklijst en kastanalyse.
-import { CATS, LOOKS, LOOK_ORDER, NEUTRALS, colorName } from './model.js';
+import { CATS, LOOKS, LOOK_ORDER, NEUTRALS, colorName, defaultLooks, defaultSeason } from './model.js';
 import { compatible, score } from './match.js';
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -87,4 +87,61 @@ export function fitsCloset(item, items, overrides) {
   const good = others.map((o) => ({ o, s: score(item, o, overrides).score })).filter((x) => x.s >= 70).sort((a, b) => b.s - a.s);
   const twins = items.filter((o) => o.id !== item.id && o.category === item.category && colorName(o.hex) === colorName(item.hex));
   return { good: good.map((x) => x.o), of: others.length, twins };
+}
+
+// Aanvuladvies: welke stukken zouden de meeste nieuwe combinaties opleveren?
+// Probeert per categorie een reeks veelgebruikte kleuren uit als denkbeeldig stuk en telt
+// met hoeveel bestaande stukken het goed zou passen. Wat je al hebt (zelfde categorie en kleur) valt weg.
+const C = { wit: '#f2f2f2', marine: '#1f2a44', grijs: '#8a8a8a', beige: '#cdb994', zwart: '#1c1c1c', lichtblauw: '#aec7e6', olijf: '#6b6b3a', bordeaux: '#6d1f2c', bruin: '#6b4228', jeans: '#5f7fa6' };
+// Per categorie de kleuren die je in de winkel ook echt vindt en vaak draagt.
+const IDEAS = {
+  tshirt: [C.wit, C.marine, C.grijs, C.zwart, C.olijf, C.bordeaux, C.lichtblauw],
+  polo: [C.wit, C.marine, C.grijs, C.zwart, C.olijf, C.bordeaux, C.lichtblauw],
+  hemd: [C.wit, C.lichtblauw, C.marine, C.jeans, C.beige, C.olijf],
+  pull: [C.marine, C.grijs, C.beige, C.olijf, C.bordeaux, C.zwart, C.bruin],
+  broek: [C.marine, C.beige, C.grijs, C.zwart, C.jeans, C.olijf, C.bruin],
+  short: [C.marine, C.beige, C.grijs, C.olijf, C.jeans],
+  jas: [C.marine, C.zwart, C.beige, C.olijf, C.grijs, C.jeans, C.bruin],
+  schoenen: [C.wit, C.zwart, C.bruin],
+};
+const MAX_PER_CAT = { jas: 1, schoenen: 1 };
+export function suggestAdditions(items, overrides, max = 6) {
+  if (items.length < 3) return [];
+  const good = (a, b) => compatible(a, b) && score(a, b, overrides).score >= 70;
+  // Stukken die nu weinig goede combinaties hebben: een toevoeging die hén helpt, is extra waard.
+  const lonely = new Set(items.filter((i) => items.filter((o) => good(i, o)).length <= 1).map((i) => i.id));
+  // Zonder onderstuk of bovenstuk kun je geen outfit maken: dat tekort weegt het zwaarst.
+  const count = (test) => items.filter((i) => test(CATS[i.category])).length;
+  const bottoms = count((c) => c.group === 'bottom'), tops = count((c) => c.layer === 'base');
+  const need = (category) => {
+    const c = CATS[category];
+    if (c.group === 'bottom') return bottoms === 0 ? 2.5 : bottoms * 3 < tops ? 1.3 : 1;
+    if (c.layer === 'base') return tops === 0 ? 2.5 : tops < bottoms ? 1.3 : 1;
+    return 1;
+  };
+  const ideas = [];
+  for (const category of Object.keys(IDEAS)) {
+    const owned = items.filter((i) => i.category === category);
+    for (const hex of IDEAS[category]) {
+      const name = colorName(hex);
+      if (owned.some((i) => colorName(i.hex) === name)) continue;
+      const idea = { id: `idee-${category}-${hex}`, category, hex, pattern: 'effen', looks: defaultLooks[category], season: defaultSeason[category] };
+      const partners = items.filter((o) => compatible(idea, o));
+      const fits = partners.map((o) => ({ o, s: score(idea, o, overrides).score })).filter((x) => x.s >= 70).sort((a, b) => b.s - a.s).map((x) => x.o);
+      if (fits.length < 2) continue;
+      const rescued = fits.filter((o) => lonely.has(o.id));
+      const weight = (owned.length === 0 ? 1.4 : owned.length >= 4 ? 0.75 : 1) * need(category);
+      ideas.push({ category, hex, colorName: name, fits, of: partners.length, rescued, isNew: owned.length === 0, value: (fits.length + rescued.length * 1.5) * weight });
+    }
+  }
+  ideas.sort((a, b) => b.value - a.value);
+  const out = [], perCat = {}, perColor = {};
+  for (const idea of ideas) {
+    if ((perCat[idea.category] || 0) >= (MAX_PER_CAT[idea.category] || 2) || (perColor[idea.colorName] || 0) >= 2) continue;
+    perCat[idea.category] = (perCat[idea.category] || 0) + 1;
+    perColor[idea.colorName] = (perColor[idea.colorName] || 0) + 1;
+    out.push(idea);
+    if (out.length >= max) break;
+  }
+  return out;
 }

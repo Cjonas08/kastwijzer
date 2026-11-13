@@ -5,10 +5,10 @@ import { mountCropper } from './crop.js';
 import { compatible, score, verdict, outfitScore, pairKey, learnPrefs } from './match.js';
 import { collage, collageKey } from './collage.js';
 import { getPlace, setPlace, forgetPlace, todayWeather } from './weather.js';
-import { dayKey, wornLabel, recentlyWorn, weatherAdvice, packList, analyse, fitsCloset } from './insights.js';
+import { dayKey, wornLabel, recentlyWorn, weatherAdvice, packList, analyse, fitsCloset, suggestAdditions } from './insights.js';
 import { SEED_ITEMS, SEED_OVERRIDES } from './seed.js';
 import { outfitFigure } from './figure.js';
-import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut, tryOn } from './sync.js';
+import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut, tryOn, recognize } from './sync.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -158,6 +158,7 @@ function renderCloset() {
       <h1>Mijn kleerkast</h1>
       <p class="sub">${state.items.length} artikels. Tik op een artikel om te zien wat erbij past.</p>
     </div>
+    ${accountHint()}
     <input type="search" class="search" data-search placeholder="Zoek op naam, kleur, look…" value="${esc(state.q)}" aria-label="Zoeken in je kast">
     <div class="chips">${chips}</div>
     <div id="closetGrid">${closetGrid()}</div>
@@ -528,12 +529,20 @@ function openPack() {
 // ---------- kastanalyse ----------
 function openAnalyse() {
   const a = analyse(state.items, state.overrides);
+  const ideas = suggestAdditions(state.items, state.overrides);
   const row = (i, extra) => `<li><img src="${esc(i.image)}" alt=""><div class="m-info"><strong>${esc(i.name)}</strong><span class="sub">${extra}</span></div></li>`;
   const block = (title, html, empty) => `<h3>${title}</h3>${html ? `<ul class="matches">${html}</ul>` : `<p class="sub">${empty}</p>`}`;
   const euro = (n) => '€ ' + n.toFixed(2).replace('.', ',');
   openSheet(`
     <h2>Kastanalyse</h2>
     <p class="sub">${a.total} artikels. Het draaglogboek vult zich met de knop "Vandaag gedragen".</p>
+    <h3>Mooie toevoegingen</h3>
+    ${ideas.length ? `<p class="sub">Stukken die je nog niet hebt en die de meeste nieuwe combinaties geven met wat er al hangt.</p>
+      <ul class="matches ideas">${ideas.map((d) => `<li>
+        <span class="idea-swatch" style="background:${d.hex}"></span>
+        <div class="m-info"><strong>${CATS[d.category].label} in ${d.colorName}</strong>
+          <span class="sub">Past goed bij ${d.fits.length} van de ${d.of} stukken, o.a. ${d.fits.slice(0, 3).map((o) => esc(o.name)).join(', ')}.${d.isNew ? ` Je hebt nog geen ${CATS[d.category].label.toLowerCase()}.` : ''}${d.rescued.length ? ` Geeft ${d.rescued.length === 1 ? esc(d.rescued[0].name) : `${d.rescued.length} stukken die nu moeilijk combineren`} een extra combinatie.` : ''}</span></div>
+      </li>`).join('')}</ul>` : '<p class="sub">Voeg eerst wat meer artikels toe: dan zoekt de app welke stukken je kast het best aanvullen.</p>'}
     <h3>Wat ontbreekt?</h3>
     ${a.gaps.length ? `<ul class="plain">${a.gaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : '<p class="sub">Geen duidelijke gaten gevonden.</p>'}
     ${block('Meest gedragen', a.most.map((i) => row(i, `${i.worn.length}× gedragen · ${wornLabel(i)}`)).join(''), 'Nog niets gelogd.')}
@@ -735,6 +744,25 @@ function openAdd() {
     }
   });
 }
+// Snijdt een kader [x0, y0, x1, y1] (0..1) uit een foto, met wat marge. Geeft null bij een onbruikbaar kader.
+async function cropToBox(src, box) {
+  if (!Array.isArray(box) || box.length !== 4 || box.some((v) => typeof v !== 'number' || Number.isNaN(v))) return null;
+  const clamp = (v) => Math.max(0, Math.min(1, v));
+  const pad = 0.03;
+  const x0 = clamp(Math.min(box[0], box[2]) - pad), y0 = clamp(Math.min(box[1], box[3]) - pad);
+  const x1 = clamp(Math.max(box[0], box[2]) + pad), y1 = clamp(Math.max(box[1], box[3]) + pad);
+  if (x1 - x0 < 0.1 || y1 - y0 < 0.1 || (x1 - x0) * (y1 - y0) > 0.9) return null;
+  const img = new Image();
+  img.src = src;
+  try { await img.decode(); } catch { return null; }
+  const w = Math.round((x1 - x0) * img.naturalWidth), h = Math.round((y1 - y0) * img.naturalHeight);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, x0 * img.naturalWidth, y0 * img.naturalHeight, w, h, 0, 0, w, h);
+  try { return c.toDataURL('image/jpeg', 0.85); } catch { return null; }
+}
 async function nextInQueue() {
   const file = state.queue.shift();
   const left = state.queue;
@@ -795,8 +823,31 @@ async function step2({ image, name, sourceUrl = '' }) {
   // Foto tonen, met knop om uit te snijden.
   const showImage = () => {
     $('#addImg').innerHTML = `<img class="g-main" src="${esc(draft.image)}" alt="">
-      <div class="row-actions"><button type="button" class="btn" data-crop>✂︎ Eén stuk uitsnijden</button></div>
+      <div class="row-actions"><button type="button" class="btn" data-crop>✂︎ Eén stuk uitsnijden</button>
+        ${syncState.email ? '<button type="button" class="btn" data-ai>✨ Herken met AI</button>' : ''}
+        ${draft.original && draft.original !== draft.image ? '<button type="button" class="btn" data-orig>↩︎ Originele foto</button>' : ''}</div>
       <p class="sub g-hint">Staan er meerdere kledingstukken op? Sleep een kader rond het stuk dat je wilt. Enkel dat stuk komt in je kast.</p>`;
+    $('[data-orig]')?.addEventListener('click', () => { draft.image = draft.original; showImage(); status('Originele foto teruggezet.'); });
+    $('[data-ai]')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      status('Claude bekijkt de foto…');
+      try {
+        const r = await recognize(await toDataUrl(draft.image, 1024), form.name.value);
+        if (!r.found) { status('Claude ziet geen kledingstuk op deze foto.', true); return showImage(); }
+        if (!form.name.value.trim()) form.name.value = r.name;
+        if (!touched.has('category')) setCategory(r.category);
+        if (!touched.has('hex') && /^#[0-9a-f]{6}$/i.test(r.hex)) { setHex(r.hex.toLowerCase()); draft.hex2 = /^#[0-9a-f]{6}$/i.test(r.hex2 || '') ? r.hex2.toLowerCase() : null; colorFromText = true; }
+        if (!touched.has('pattern')) form.pattern.value = r.pattern;
+        if (!touched.has('looks') && r.looks?.length) form.querySelectorAll('[name=looks]').forEach((b) => { b.checked = r.looks.includes(b.value); });
+        if (!touched.has('season')) { const s = form.querySelector(`[name=season][value="${r.season}"]`); if (s) s.checked = true; }
+        // Staan er nog andere stukken op? Dan snijdt de app het aangeduide stuk uit.
+        const cut = r.others > 0 ? await cropToBox(draft.image, r.box) : null;
+        if (cut) { draft.original = draft.original || draft.image; draft.image = cut; }
+        showImage();
+        updateCheck();
+        status(`Herkend door Claude: ${r.name}${cut ? '. Het stuk is uitgesneden; niet goed? Zet de originele foto terug.' : '.'} Kijk de velden na.`);
+      } catch (err) { status('AI-herkenning lukte niet: ' + (err.message || err), true); showImage(); }
+    });
     $('[data-crop]').addEventListener('click', () => {
       mountCropper($('#addImg'), draft.image, {
         onApply: async (cropped) => {
@@ -887,7 +938,7 @@ function openMenu() {
         ${state.person ? '<button class="btn danger" data-action="person-remove">Pasfoto en gepaste beelden wissen</button>' : ''}
       </div>
     </section>
-    <section class="sync-box" id="syncBox"><h3>Synchroniseren</h3><p class="sub">Laden…</p></section>
+    <section class="sync-box" id="syncBox"><h3>Account</h3><p class="sub">Laden…</p></section>
     <div class="about">
       <h3>Hoe werkt de inschatting?</h3>
       <p>Deze versie is gratis: de foto wordt op je toestel zelf geanalyseerd (hoofdkleur en motief). Categorie en looks haalt de app uit de naam of de webshop. Daarna berekent ze per combinatie een score op kleur, contrast, motief, look en seizoen. Jouw ✓/✗ gaan altijd voor.</p>
@@ -897,6 +948,18 @@ function openMenu() {
   renderSyncBox();
 }
 
+function openAccount() {
+  openSheet('<h2>Account</h2><section class="sync-box" id="syncBox"><p class="sub">Laden…</p></section>');
+  renderSyncBox();
+}
+const HINT_KEY = 'kastwijzer.accounthint';
+const hintHidden = () => { try { return localStorage.getItem(HINT_KEY) === 'weg'; } catch { return false; } };
+function accountHint() {
+  if (syncState.email || hintHidden()) return '';
+  return `<div class="account-hint"><span>Log in met je account om je kleerkast op pc, gsm en andere toestellen te zien.</span>
+    <span class="row-actions"><button class="btn primary" data-action="account">Account</button><button class="btn ghost" data-action="hint-hide">Niet nu</button></span></div>`;
+}
+
 let loginEmail = '';
 async function renderSyncBox() {
   const box = $('#syncBox');
@@ -904,8 +967,8 @@ async function renderSyncBox() {
   const cfg = getConfig();
   const user = cfg ? await currentUser().catch(() => null) : null;
   if (!cfg) {
-    box.innerHTML = `<h3>Synchroniseren</h3>
-      <p class="sub">Koppel je eigen (gratis) Supabase-project om pc en gsm gelijk te houden. De stappen staan in de handleiding (SETUP.md).</p>
+    box.innerHTML = `<h3>Account en synchronisatie</h3>
+      <p class="sub">Met een account staat je kleerkast veilig online en zie je ze op elk toestel. Daarvoor moet de app één keer gekoppeld worden aan je eigen (gratis) Supabase-project; de stappen staan in de handleiding (SETUP.md). Zolang dat niet gebeurd is, staan je gegevens enkel op dit toestel.</p>
       <form class="form" id="cfgForm">
         <label>Project URL<input name="url" placeholder="https://xxxx.supabase.co" required></label>
         <label>Publieke sleutel (anon / publishable)<input name="key" required></label>
@@ -921,8 +984,8 @@ async function renderSyncBox() {
     return;
   }
   if (!user) {
-    box.innerHTML = `<h3>Synchroniseren</h3>
-      <p class="sub">Log in met je e-mailadres. Je krijgt een mail met een link en een code. Gebruik op elk toestel hetzelfde adres.</p>
+    box.innerHTML = `<h3>Inloggen</h3>
+      <p class="sub">Je account is je e-mailadres, zonder wachtwoord: je krijgt een mail met een link en een code. Gebruik op elk toestel (pc, gsm, tablet) hetzelfde adres en je ziet overal dezelfde kleerkast.</p>
       <form class="form" id="loginForm">
         <label>E-mailadres<input type="email" name="email" value="${esc(loginEmail)}" autocomplete="email" required></label>
         <div class="row-actions"><button class="btn primary">Stuur login-mail</button></div>
@@ -953,7 +1016,7 @@ async function renderSyncBox() {
     return;
   }
   const last = syncState.lastSync ? syncState.lastSync.toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' }) : 'nog niet';
-  box.innerHTML = `<h3>Synchroniseren</h3>
+  box.innerHTML = `<h3>Account</h3>
     <p>Ingelogd als <strong>${esc(user.email)}</strong>.<br>
     <span class="sub">${syncState.status === 'fout' ? `Probleem: ${esc(syncState.message)}` : `Laatst gesynchroniseerd: ${last}`}</span></p>
     <div class="row-actions">
@@ -1158,6 +1221,8 @@ const actions = {
     renderSyncBox();
   },
   async 'sign-out'() { await signOut(); renderSyncBox(); },
+  account: openAccount,
+  'hint-hide'() { try { localStorage.setItem(HINT_KEY, 'weg'); } catch { /* opslag geblokkeerd */ } render(); },
   'forget-config'() { forgetConfig(); loginEmail = ''; renderSyncBox(); },
   async 'remove-tests'() {
     if (!confirm('Alle testartikels verwijderen?')) return;
@@ -1224,15 +1289,16 @@ document.addEventListener('input', (e) => {
   $('#closetGrid').innerHTML = closetGrid();
 });
 $('#menuBtn').addEventListener('click', openMenu);
-$('#syncBtn').addEventListener('click', openMenu);
-const SYNC_ICON = { uit: '', uitgelogd: '☁︎', bezig: '↻', ok: '☁︎', fout: '⚠︎', offline: '☁︎' };
-const SYNC_TITLE = { uitgelogd: 'Niet ingelogd: niet gesynchroniseerd', bezig: 'Bezig met synchroniseren…', ok: 'Gesynchroniseerd', fout: 'Synchronisatie mislukt', offline: 'Offline: synchroniseert later' };
+$('#syncBtn').addEventListener('click', openAccount);
+const SYNC_ICON = { uit: '👤', uitgelogd: '☁︎', bezig: '↻', ok: '☁︎', fout: '⚠︎', offline: '☁︎' };
+const SYNC_TITLE = { uit: 'Account: nog niet gekoppeld', uitgelogd: 'Niet ingelogd: niet gesynchroniseerd', bezig: 'Bezig met synchroniseren…', ok: 'Gesynchroniseerd', fout: 'Synchronisatie mislukt', offline: 'Offline: synchroniseert later' };
 onSyncStatus(({ status, message }) => {
   const b = $('#syncBtn');
-  b.hidden = status === 'uit';
+  b.hidden = false;
   b.textContent = SYNC_ICON[status] || '☁︎';
   b.title = (SYNC_TITLE[status] || '') + (message ? `: ${message}` : '');
   b.dataset.status = status;
+  if (status === 'ok' && $('.account-hint')) render();
 });
 
 function render() {

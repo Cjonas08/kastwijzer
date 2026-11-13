@@ -24,7 +24,7 @@ Open daarna http://localhost:8765.
 - `js/cutout.js`, `js/collage.js`: achtergrond wegknippen op het toestel en de outfit neerleggen als beeld
 - `js/insights.js`: draaglogboek, weeradvies, paklijst, kastanalyse en koopcheck (rekenwerk)
 - `js/weather.js`: weer van vandaag via Open-Meteo
-- `supabase/`: SQL-script en de functies `fetch-page` (webshoplinks) en `try-on` (betalende pasbeurt)
+- `supabase/`: SQL-script en de functies `fetch-page` (webshoplinks), `try-on` (betalende pasbeurt) en `recognize` (AI-herkenning met Claude)
 - `tests/`: automatische tests, open `tests/` in de browser
 
 Instellen van synchronisatie en hosting: zie [SETUP.md](SETUP.md).
