@@ -1,7 +1,7 @@
 // Offline-ondersteuning: app-bestanden uit de cache, foto's van Unsplash bijhouden na het eerste laden.
-const VERSION = 'kastwijzer-v2';
+const VERSION = 'kastwijzer-v3';
 const SHELL = ['./', 'index.html', 'styles.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
-  'js/app.js', 'js/db.js', 'js/model.js', 'js/analyze.js', 'js/match.js', 'js/seed.js', 'js/sync.js', 'js/config.js'];
+  'js/app.js', 'js/db.js', 'js/model.js', 'js/analyze.js', 'js/match.js', 'js/seed.js', 'js/sync.js', 'js/config.js', 'js/figure.js', 'js/crop.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

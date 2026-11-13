@@ -139,8 +139,25 @@ const RULES = [
   [/broek|jeans|chino|pantalon|trousers|pants|jogger|cargo|denim/i, 'broek'],
 ];
 
+// Kleurwoorden in de omschrijving ("de lichtblauwe jeans", "navy sweater"). Langste eerst.
+const COLOR_WORDS = [
+  ['donkerblauw', '#1f2a44'], ['marineblauw', '#1f2a44'], ['marine', '#1f2a44'], ['navy', '#1f2a44'],
+  ['lichtblauw', '#aec7e6'], ['light blue', '#aec7e6'], ['jeansblauw', '#5f7fa6'],
+  ['lichtgrijs', '#c8c8c8'], ['lichtgrijze', '#c8c8c8'], ['donkergrijs', '#4a4a4c'], ['donkergrijze', '#4a4a4c'], ['antraciet', '#3a3a3c'], ['charcoal', '#3a3a3c'],
+  ['donkergroen', '#2f4f36'], ['saliegroen', '#9aa685'], ['salie', '#9aa685'], ['sage', '#9aa685'], ['olijf', '#6b6b3a'], ['olive', '#6b6b3a'],
+  ['bordeaux', '#6d1f2c'], ['burgundy', '#6d1f2c'], ['turquoise', '#3fb0b0'], ['petrol', '#1f5560'],
+  ['crème', '#ece4d4'], ['creme', '#ece4d4'], ['ecru', '#ece4d4'], ['offwhite', '#efeae0'], ['off-white', '#efeae0'],
+  ['beige', '#cdb994'], ['zand', '#cdb994'], ['kaki', '#b3a073'], ['khaki', '#b3a073'], ['camel', '#b5814a'], ['cognac', '#9a5b2e'],
+  ['bruin', '#6b4228'], ['brown', '#6b4228'], ['zwart', '#1c1c1c'], ['black', '#1c1c1c'], ['wit', '#f2f2f2'], ['white', '#f2f2f2'],
+  ['grijs', '#8a8a8a'], ['grijze', '#8a8a8a'], ['grey', '#8a8a8a'], ['gray', '#8a8a8a'], ['blauw', '#2f5fa8'], ['blue', '#2f5fa8'],
+  ['groen', '#3f7a4a'], ['green', '#3f7a4a'], ['rood', '#b3302f'], ['rode', '#b3302f'], ['red', '#b3302f'], ['roze', '#e6a3b4'], ['pink', '#e6a3b4'],
+  ['geel', '#e3c34a'], ['gele', '#e3c34a'], ['yellow', '#e3c34a'], ['oranje', '#e07b39'], ['orange', '#e07b39'], ['lila', '#c8b6e2'], ['paars', '#6a4c93'], ['purple', '#6a4c93'],
+];
+
 export function guessFromText(text = '') {
   const out = {};
+  const low = text.toLowerCase();
+  for (const [word, hex] of COLOR_WORDS) if (low.includes(word)) { out.hex = hex; out.colorWord = word; break; }
   for (const [re, cat] of RULES) if (re.test(text)) { out.category = cat; break; }
   if (/jogging|jogger|track|sport|dry-?fit|training|running/i.test(text)) out.looks = ['sportief', 'casual'];
   else if (/smoking|kostuum|nethemd|dress shirt|wollen pantalon/i.test(text)) out.looks = ['chique', 'gekleed'];
@@ -164,7 +181,8 @@ export async function estimate({ image, name = '' }) {
   const category = text.category || 'tshirt';
   return {
     category,
-    hex: img?.hex || '#888888',
+    hex: text.hex || img?.hex || '#888888',
+    colorFromText: !!text.hex,
     hex2: img?.hex2 || null,
     pattern: text.pattern || img?.pattern || 'effen',
     looks: text.looks || null,

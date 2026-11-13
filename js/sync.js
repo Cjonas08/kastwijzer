@@ -87,32 +87,55 @@ const dataUrlToBlob = (u) => fetch(u).then((r) => r.blob());
 const blobToDataUrl = (b) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });
 
 // Lokaal item → wat er in Supabase komt (eigen foto's naar Storage, niet in de database).
-// Geeft { data, extra } terug: extra wordt na verzending lokaal bewaard (bv. het pad van de foto).
-async function toRemote(store, value, c, uid) {
-  const { updatedAt, syncedAt, ...data } = value;
-  if (store !== 'items' || !String(value.image).startsWith('data:')) return { data };
-  const hash = await sha1(value.image);
-  const path = `${uid}/${value.id}-${hash}.jpg`;
-  if (value.imagePath !== path) {
-    const { error } = await c.storage.from(BUCKET).upload(path, await dataUrlToBlob(value.image), { upsert: true, contentType: 'image/jpeg' });
+// Eigen foto's (data-URL's) gaan naar Storage; in de database staat enkel "sb:<pad>".
+// Het pad bevat een hash van de foto, zodat dezelfde foto nooit twee keer verstuurd wordt.
+const hashFromPath = (path) => path.split('-').pop().replace(/\.jpg$/, '');
+
+async function imageToRemote(src, id, c, uid, uploaded) {
+  if (!String(src).startsWith('data:')) return { ref: src };
+  const path = `${uid}/${id}-${await sha1(src)}.jpg`;
+  if (!uploaded.includes(path)) {
+    const { error } = await c.storage.from(BUCKET).upload(path, await dataUrlToBlob(src), { upsert: true, contentType: 'image/jpeg' });
     if (error) throw error;
   }
-  return { data: { ...data, image: 'sb:' + path, imagePath: path }, extra: { imagePath: path } };
+  return { ref: 'sb:' + path, path };
+}
+
+// Geeft { data, extra } terug: extra wordt na verzending lokaal bewaard (welke foto's al online staan).
+async function toRemote(store, value, c, uid) {
+  const { updatedAt, syncedAt, uploaded = [], imagePath, ...data } = value;
+  if (store !== 'items') return { data };
+  const refs = [], paths = [];
+  for (const src of [value.image, ...(value.photos || [])]) {
+    const r = await imageToRemote(src, value.id, c, uid, uploaded.concat(imagePath ? [imagePath] : []));
+    refs.push(r.ref);
+    if (r.path) paths.push(r.path);
+  }
+  return { data: { ...data, image: refs[0], photos: refs.slice(1) }, extra: { uploaded: paths } };
 }
 
 async function fromRemote(store, data, updatedAt, c) {
   const v = { ...data, updatedAt, syncedAt: updatedAt };
-  if (store === 'items' && String(data.image).startsWith('sb:')) {
-    const path = data.image.slice(3);
-    const local = await db.get('items', data.id);
-    if (local?.imagePath === path && String(local.image).startsWith('data:')) v.image = local.image;
-    else {
-      const { data: blob, error } = await c.storage.from(BUCKET).download(path);
-      if (error) throw error;
-      v.image = await blobToDataUrl(blob);
-    }
-    v.imagePath = path;
-  }
+  if (store !== 'items') return v;
+  const local = await db.get('items', data.id);
+  const localImgs = local ? [local.image, ...(local.photos || [])].filter((x) => String(x).startsWith('data:')) : [];
+  const localHashes = await Promise.all(localImgs.map(sha1));
+  const resolve = async (ref) => {
+    if (!String(ref).startsWith('sb:')) return ref;
+    const path = ref.slice(3);
+    const i = localHashes.indexOf(hashFromPath(path));
+    if (i >= 0) return localImgs[i];
+    const { data: blob, error } = await c.storage.from(BUCKET).download(path);
+    if (error) throw error;
+    return blobToDataUrl(blob);
+  };
+  const refs = [data.image, ...(data.photos || [])];
+  const imgs = [];
+  for (const r of refs) imgs.push(await resolve(r));
+  v.image = imgs[0];
+  v.photos = imgs.slice(1);
+  v.uploaded = refs.filter((r) => String(r).startsWith('sb:')).map((r) => r.slice(3));
+  delete v.imagePath;
   return v;
 }
 

@@ -1,8 +1,10 @@
 import { db } from './db.js';
 import { CATS, CAT_ORDER, SLOTS, slotOf, PATTERNS, SEASONS, LOOKS, LOOK_ORDER, defaultLooks, looksFromFormality, defaultSeason, colorName, uid } from './model.js';
-import { estimate, analyzeImage, fileToDataUrl, importFromLink } from './analyze.js';
+import { estimate, analyzeImage, fileToDataUrl, importFromLink, guessFromText } from './analyze.js';
+import { mountCropper } from './crop.js';
 import { compatible, score, verdict, outfitScore, pairKey } from './match.js';
 import { SEED_ITEMS, SEED_OVERRIDES } from './seed.js';
+import { outfitFigure } from './figure.js';
 import { initSync, onSyncStatus, syncNow, syncState, getConfig, saveConfig, forgetConfig, currentUser, sendLogin, verifyCode, signOut } from './sync.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -52,9 +54,10 @@ async function setOverride(a, b, value) {
 }
 
 // ---------- algemeen ----------
+const toastEl = document.getElementById('toast');
 let toastTimer;
 function toast(msg) {
-  const t = $('#toast');
+  const t = toastEl;
   // Een open dialoog ligt boven alles; zet de melding er dan in.
   (sheet.open ? sheet : document.body).appendChild(t);
   t.textContent = msg;
@@ -88,7 +91,7 @@ const badge = (sc, small) => { const v = verdict(sc); return `<span class="badge
 
 function card(item, extra = '', attrs = '') {
   return `<button class="card" data-id="${item.id}" ${attrs}>
-    <div class="thumb"><img loading="lazy" src="${esc(item.image)}" alt=""></div>
+    <div class="thumb"><img loading="lazy" src="${esc(item.image)}" alt="">${item.photos?.length ? `<span class="photo-count">${item.photos.length + 1} foto's</span>` : ''}</div>
     <div class="card-body">
       <div class="card-name">${esc(item.name)}</div>
       <div class="card-meta">${swatch(item.hex, item.hex2)}${colorName(item.hex)} · ${CATS[item.category].label}</div>
@@ -173,14 +176,20 @@ function renderOutfit() {
     for (let a = 0; a < chosen.length; a++) for (let b = a + 1; b < chosen.length; b++) {
       if (compatible(chosen[a], chosen[b])) pairs.push(score(chosen[a], chosen[b], state.overrides));
     }
+    let info = '<p class="sub">Kies hieronder wat erbij komt.</p>';
     if (pairs.length) {
       const total = Math.round(Math.min(...pairs.map((p) => p.score)) * 0.6 + pairs.reduce((s, p) => s + p.score, 0) / pairs.length * 0.4);
       const why = [...new Set(pairs.flatMap((p) => p.override ? [p.override === 'yes' ? 'door jou goedgekeurd' : 'door jou afgekeurd'] : p.why))];
-      body = `<section class="summary">
-        <div>${badge(total)} <span class="sub">${why.join(' · ')}</span></div>
-        ${complete ? `<button class="btn primary" data-action="save-outfit">Outfit bewaren</button>` : ''}
-      </section>` + body;
+      info = `<div>${badge(total)}</div><p class="sub">${why.join(' · ')}</p>`;
     }
+    body = `<section class="preview">
+      <div class="preview-fig">${outfitFigure(slotItems(), { width: 150 })}</div>
+      <div class="preview-info">
+        <h2>Zo ziet het eruit</h2>
+        ${info}
+        ${complete ? `<div class="row-actions"><button class="btn primary" data-action="save-outfit">Outfit bewaren</button></div>` : ''}
+      </div>
+    </section>` + body;
     if (state.showAll) body += `<button class="link" data-action="showall">Verberg wat niet past</button>`;
   }
 
@@ -199,6 +208,13 @@ function renderOutfit() {
     </div>
     <div class="slots">${slotCards}</div>
     ${body}`;
+}
+
+const slotItems = (ids = state.outfit) => ({ onder: ids.onder && byId(ids.onder), boven: ids.boven && byId(ids.boven), laag: ids.laag && byId(ids.laag) });
+function slotsFromIds(itemIds) {
+  const o = { onder: null, boven: null, laag: null };
+  itemIds.map(byId).filter(Boolean).forEach((it) => { o[slotOf(it.category)] = it; });
+  return o;
 }
 
 function pickForOutfit(id) {
@@ -232,7 +248,7 @@ function saveOutfit() {
   const ids = SLOTS.map((s) => state.outfit[s.id]).filter(Boolean);
   openSheet(`
     <h2>Outfit bewaren</h2>
-    <div class="outfit-imgs">${ids.map((id) => `<img src="${esc(byId(id).image)}" alt="">`).join('')}</div>
+    <div class="outfit-imgs"><span class="mini-fig">${outfitFigure(slotItems(), { width: 58 })}</span>${ids.map((id) => `<img src="${esc(byId(id).image)}" alt="">`).join('')}</div>
     <form class="form" id="outfitForm">
       <label>Naam<input name="name" value="${esc(ids.map((id) => byId(id).name).join(' + '))}" required></label>
       <div class="row-actions"><button class="btn primary">Bewaren</button><button type="button" class="btn ghost" data-close>Annuleren</button></div>
@@ -257,7 +273,7 @@ function renderSaved() {
       const items = o.itemIds.map(byId).filter(Boolean);
       return `<div class="outfit-card">
         <button class="outfit-open" data-open-outfit="${o.id}">
-          <div class="outfit-imgs">${items.map((i) => `<img src="${esc(i.image)}" alt="">`).join('')}</div>
+          <div class="outfit-imgs"><span class="mini-fig">${outfitFigure(slotsFromIds(o.itemIds), { width: 58 })}</span>${items.map((i) => `<img src="${esc(i.image)}" alt="">`).join('')}</div>
           <strong>${esc(o.name)}</strong>${o.look && LOOKS[o.look] ? `<span class="badge kan small">${LOOKS[o.look].label}</span>` : ''}
           <span class="sub">${items.map((i) => esc(i.name)).join(' · ')}</span>
         </button>
@@ -330,11 +346,55 @@ function matchList(it) {
   }).join('');
 }
 
+// ---------- foto's van een artikel ----------
+const MAX_PHOTOS = 8;
+let gallerySel = 0;
+const photosOf = (it) => [it.image, ...(it.photos || [])];
+
+function gallery(it) {
+  const imgs = photosOf(it);
+  if (gallerySel >= imgs.length) gallerySel = 0;
+  return `
+    <img class="g-main" src="${esc(imgs[gallerySel])}" alt="">
+    <div class="g-thumbs">
+      ${imgs.map((src, i) => `<button type="button" class="g-thumb ${i === gallerySel ? 'on' : ''}" data-gsel="${i}" aria-label="Foto ${i + 1}">
+        <img src="${esc(src)}" alt="">${i === 0 && imgs.length > 1 ? '<span class="star" title="Hoofdfoto">★</span>' : ''}</button>`).join('')}
+      ${imgs.length < MAX_PHOTOS ? `<label class="g-add" title="Foto's toevoegen">＋<input type="file" accept="image/*" multiple data-addphoto="${it.id}" hidden></label>` : ''}
+    </div>
+    <div class="row-actions g-actions"><button type="button" class="btn" data-action="photo-crop" data-id="${it.id}">✂︎ Uitsnijden</button></div>
+    ${gallerySel > 0
+      ? `<div class="row-actions g-actions">
+          <button type="button" class="btn" data-action="photo-main" data-id="${it.id}">★ Maak hoofdfoto</button>
+          <button type="button" class="btn danger" data-action="photo-del" data-id="${it.id}">Foto verwijderen</button>
+        </div>`
+      : `<p class="sub g-hint">${imgs.length > 1 ? '★ Hoofdfoto: verschijnt in de kast en bepaalt de kleur.' : 'Tik op ＋ om extra foto’s toe te voegen (achterkant, detail, gedragen…).'}</p>`}`;
+}
+function refreshGallery(id) {
+  const g = $('#gallery');
+  if (g) g.innerHTML = gallery(byId(id));
+}
+async function addPhotos(id, files) {
+  const it = byId(id);
+  const room = MAX_PHOTOS - photosOf(it).length;
+  const list = [...files].slice(0, room);
+  if (!list.length) return toast(`Maximaal ${MAX_PHOTOS} foto's per artikel`);
+  toast('Foto’s toevoegen…');
+  const added = [];
+  for (const f of list) { try { added.push(await fileToDataUrl(f)); } catch { /* onleesbaar bestand overslaan */ } }
+  await saveItem({ ...it, photos: [...(it.photos || []), ...added] });
+  gallerySel = photosOf(byId(id)).length - 1;
+  refreshGallery(id);
+  toast(added.length === 1 ? 'Foto toegevoegd' : `${added.length} foto's toegevoegd`);
+}
+
+let currentDetailId = null;
 function openDetail(id) {
+  currentDetailId = id;
+  gallerySel = 0;
   const it = byId(id);
   openSheet(`
     <div class="detail">
-      <div class="detail-img"><img src="${esc(it.image)}" alt="">
+      <div class="detail-img"><div id="gallery">${gallery(it)}</div>
         ${it.credit ? `<small>${esc(it.credit)}</small>` : ''}
         ${it.sourceUrl ? `<small><a href="${esc(it.sourceUrl)}" target="_blank" rel="noopener">Bekijk in webshop ↗</a></small>` : ''}
       </div>
@@ -423,16 +483,18 @@ async function step2({ image, name, sourceUrl = '' }) {
     looks: est.looks || (est.categoryGuessed ? defaultLooks[est.category] : []), season: est.season,
   };
   status(est.analyzed
-    ? `Ingeschat: ${colorName(est.hex)}${est.pattern !== 'effen' ? ', met motief' : ''}. Controleer en pas aan waar nodig.`
+    ? `Ingeschat: ${colorName(est.hex)}${est.pattern !== 'effen' ? ', met motief' : ''}. Staan er meerdere stukken op de foto? Zeg hieronder welk stuk het is en snij het uit.`
     : 'De kleur kon niet uit deze foto gehaald worden. Kies ze hieronder zelf.');
   sheet.classList.add('wide');
   sheet.querySelector('.add-sources').hidden = true;
   $('#linkForm').hidden = true;
   $('#addStep2').innerHTML = `
     <div class="detail">
-      <div class="detail-img"><img src="${esc(image)}" alt=""></div>
+      <div class="detail-img">
+        <div id="addImg"></div>
+      </div>
       <form class="form" id="addForm">
-        ${attrFields(draft)}
+        ${attrFields(draft).replace('<label>Naam<input name="name"', '<label>Welk stuk is het? <small>bv. "lichtblauwe jeans" of "zwarte polo"</small><input name="name" autocomplete="off"')}
         <div class="row-actions">
           <button class="btn primary">Opslaan</button>
           <button type="button" class="btn ghost" data-close>Annuleren</button>
@@ -440,15 +502,65 @@ async function step2({ image, name, sourceUrl = '' }) {
       </form>
     </div>`;
   const form = $('#addForm');
-  let touched = new Set();
+  const touched = new Set();
+  let colorFromText = est.colorFromText;
+
+  const setHex = (hex) => {
+    form.hex.value = hex;
+    $('[data-colorname]', form).textContent = colorName(hex);
+  };
+  const setCategory = (c) => {
+    if (!form.category.querySelector('option[value=""]') && !c) return;
+    form.category.value = c;
+    form.category.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+
+  // Foto tonen, met knop om uit te snijden.
+  const showImage = () => {
+    $('#addImg').innerHTML = `<img class="g-main" src="${esc(draft.image)}" alt="">
+      <div class="row-actions"><button type="button" class="btn" data-crop>✂︎ Eén stuk uitsnijden</button></div>
+      <p class="sub g-hint">Staan er meerdere kledingstukken op? Sleep een kader rond het stuk dat je wilt. Enkel dat stuk komt in je kast.</p>`;
+    $('[data-crop]').addEventListener('click', () => {
+      mountCropper($('#addImg'), draft.image, {
+        onApply: async (cropped) => {
+          draft.image = cropped;
+          showImage();
+          try {
+            const r = await analyzeImage(cropped);
+            if (!touched.has('hex') && !colorFromText) setHex(r.hex);
+            if (!touched.has('pattern')) form.pattern.value = r.pattern;
+            status(`Uitgesneden. Ingeschat: ${r.colorName}${r.pattern !== 'effen' ? ', met motief' : ''}.`);
+          } catch { status('Uitgesneden.'); }
+        },
+        onCancel: showImage,
+      });
+    });
+  };
+  showImage();
+
+  // De omschrijving vult categorie, kleur, motief en looks in (tenzij je die zelf al koos).
+  let typing;
+  form.name.addEventListener('input', () => {
+    clearTimeout(typing);
+    typing = setTimeout(() => {
+      const g = guessFromText(form.name.value);
+      if (g.category && !touched.has('category')) setCategory(g.category);
+      if (g.hex && !touched.has('hex')) { setHex(g.hex); colorFromText = true; }
+      if (g.pattern && !touched.has('pattern')) form.pattern.value = g.pattern;
+      if (g.looks && !touched.has('looks')) form.querySelectorAll('[name=looks]').forEach((b) => { b.checked = g.looks.includes(b.value); });
+    }, 350);
+  });
+
   form.addEventListener('input', (e) => {
-    touched.add(e.target.name);
+    if (e.target.name !== 'name') touched.add(e.target.name);
     if (e.target.name === 'hex') $('[data-colorname]', form).textContent = colorName(e.target.value);
   });
   form.addEventListener('change', (e) => {
     if (e.target.name !== 'category') return;
+    if (e.isTrusted) touched.add('category');
     const c = e.target.value;
-    if (!touched.has('looks') && !est.looks) form.querySelectorAll('[name=looks]').forEach((b) => { b.checked = defaultLooks[c].includes(b.value); });
+    const g = guessFromText(form.name.value);
+    if (!touched.has('looks') && !g.looks) form.querySelectorAll('[name=looks]').forEach((b) => { b.checked = defaultLooks[c].includes(b.value); });
     if (!touched.has('season')) form.querySelector(`[name=season][value="${defaultSeason[c]}"]`).checked = true;
   });
   form.addEventListener('submit', async (e) => {
@@ -588,6 +700,39 @@ const actions = {
     pickForOutfit(el.dataset.id);
     setView('outfit');
   },
+  'photo-crop'(el) {
+    const it = byId(el.dataset.id);
+    const idx = gallerySel;
+    mountCropper($('#gallery'), photosOf(it)[idx], {
+      onApply: async (cropped) => {
+        const cur = byId(it.id);
+        const imgs = photosOf(cur);
+        imgs[idx] = cropped;
+        await saveItem({ ...cur, image: imgs[0], photos: imgs.slice(1) });
+        refreshGallery(it.id);
+        toast(idx === 0 ? 'Uitgesneden. Tip: "Kleur opnieuw inschatten".' : 'Uitgesneden');
+      },
+      onCancel: () => refreshGallery(it.id),
+    });
+  },
+  async 'photo-main'(el) {
+    const it = byId(el.dataset.id);
+    const imgs = photosOf(it);
+    const [main] = imgs.splice(gallerySel, 1);
+    await saveItem({ ...it, image: main, photos: imgs });
+    gallerySel = 0;
+    refreshGallery(it.id);
+    toast('Hoofdfoto gewijzigd. Tip: "Kleur opnieuw inschatten".');
+  },
+  async 'photo-del'(el) {
+    if (!confirm('Deze foto verwijderen?')) return;
+    const it = byId(el.dataset.id);
+    const photos = (it.photos || []).filter((_, i) => i !== gallerySel - 1);
+    await saveItem({ ...it, photos });
+    gallerySel = 0;
+    refreshGallery(it.id);
+    toast('Foto verwijderd');
+  },
   async reanalyze(el) {
     const it = byId(el.dataset.id);
     try {
@@ -635,6 +780,8 @@ const actions = {
 
 document.addEventListener('click', async (e) => {
   const t = e.target;
+  const gsel = t.closest('[data-gsel]');
+  if (gsel) { gallerySel = +gsel.dataset.gsel; return refreshGallery(currentDetailId); }
   const act = t.closest('[data-action]');
   if (act) { e.preventDefault(); return actions[act.dataset.action]?.(act); }
   const view = t.closest('[data-view]');
@@ -670,6 +817,7 @@ document.addEventListener('click', async (e) => {
   if (c && !sheet.contains(c)) return openDetail(c.dataset.id);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.matches('[data-addphoto]')) { addPhotos(e.target.dataset.addphoto, e.target.files); return; }
   if (e.target.matches('[data-season]')) { state.season = e.target.value; render(); }
   if (e.target.matches('[data-look]')) { state.look = e.target.value; render(); }
 });
